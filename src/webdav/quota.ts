@@ -1,8 +1,15 @@
-import type { QuotaProvider } from "../interfaces/webdav/rfc4331";
+import type { Path } from "../interfaces/file_system";
+import type { StorageQuotaProvider } from "../interfaces/file_system";
+import type { Quota, QuotaProvider } from "../interfaces/webdav/rfc4331";
 
-/** R2 does not expose a quota limit, so RFC 4331 properties are intentionally omitted. */
-export class UnlimitedQuotaProvider implements QuotaProvider {
-  getQuota(): ReturnType<QuotaProvider["getQuota"]> {
-    return Promise.resolve(undefined);
+export class FileSystemQuotaProvider implements QuotaProvider {
+  constructor(private readonly quota: StorageQuotaProvider) {}
+
+  async getQuota(collection: Path): Promise<Quota> {
+    const storage = await this.quota.getQuota(collection);
+    return {
+      usedBytes: storage.usedBytes,
+      availableBytes: storage.availableBytes ?? Number.MAX_SAFE_INTEGER,
+    };
   }
 }

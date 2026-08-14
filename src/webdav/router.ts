@@ -39,7 +39,7 @@ import { toPath, href } from "../filesystem/path";
 import { DavLocks } from "./locks";
 import { DavMkcol } from "./mkcol";
 import { DavProperties } from "./properties";
-import { UnlimitedQuotaProvider } from "./quota";
+import { FileSystemQuotaProvider } from "./quota";
 import { DavSync } from "./sync";
 import { ifHeaderMatches, parseIfHeader } from "./if";
 
@@ -128,14 +128,15 @@ app.use("*", async (c, next) => {
   try {
     const path = toPath(decodeURIComponent(c.req.path));
     const state = c.env.FileSystemState.getByName("root");
-    c.set("path", path);
-    c.set(
-      "filesystem",
-      new ObjectStoreFileSystem(new R2ObjectStore(c.env.BUCKET), state),
+    const filesystem = new ObjectStoreFileSystem(
+      new R2ObjectStore(c.env.BUCKET),
+      state,
     );
+    c.set("path", path);
+    c.set("filesystem", filesystem);
     const locks = new DavLocks(state);
     const sync = new DavSync(state);
-    const quota = new UnlimitedQuotaProvider();
+    const quota = new FileSystemQuotaProvider(filesystem);
     c.set("dav", {
       properties: new DavProperties(state, locks, sync, quota),
       locks,

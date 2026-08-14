@@ -13,6 +13,8 @@ import type {
   RemoveOptions,
   Resource,
   ResourceId,
+  StorageQuota,
+  StorageQuotaProvider,
   WriteFileOptions,
 } from "../interfaces/file_system";
 import type {
@@ -60,7 +62,7 @@ export const emptyBody = () =>
     },
   });
 
-export class ObjectStoreFileSystem implements FileSystem {
+export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
   constructor(
     private readonly objects: ObjectStore,
     private readonly state: DurableObjectStub<FileSystemState>,
@@ -315,5 +317,9 @@ export class ObjectStoreFileSystem implements FileSystem {
       }
     }
     return toResource(moved.resource);
+  }
+
+  async getQuota(path: Path): Promise<StorageQuota> {
+    return { usedBytes: await this.state.usedBytes(path) };
   }
 }

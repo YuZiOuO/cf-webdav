@@ -72,6 +72,18 @@ export interface MoveOptions {
   overwrite: boolean;
 }
 
+/** Storage quota for a filesystem path. */
+export interface StorageQuota {
+  usedBytes: number;
+  /** Omitted when the quota is unlimited or unknown. */
+  availableBytes?: number;
+}
+
+/** Optional filesystem capability for reporting storage quotas. */
+export interface StorageQuotaProvider {
+  getQuota(path: Path): Promise<StorageQuota>;
+}
+
 /**
  * Filesystem semantics over object content. A resource has a stable identity;
  * a path is only a directory entry and may change without changing that

@@ -915,6 +915,22 @@ export class FileSystemState extends DurableObject {
     });
   }
 
+  usedBytes(path: string) {
+    return this.transaction(() => {
+      const prefix = `${path}/`;
+      return this.ctx.storage.sql
+        .exec<{ used_bytes: number }>(
+          `SELECT COALESCE(SUM(size), 0) AS used_bytes
+           FROM fs_resources
+           WHERE kind = 'file' AND (path = ? OR substr(path, 1, ?) = ?)`,
+          path,
+          prefix.length,
+          prefix,
+        )
+        .one().used_bytes;
+    });
+  }
+
   sync(
     collectionPath: string,
     token: string | undefined,

@@ -44,6 +44,7 @@ export class DavProperties implements DavPropertyService {
   private async liveProperties(
     path: Path,
     resource: Resource,
+    includeQuota: boolean,
   ): Promise<readonly { name: DavPropertyName; property: DavProperty }[]> {
     const properties: { name: DavPropertyName; property: DavProperty }[] = [];
     const add = (localName: string, property: DavProperty) =>
@@ -90,20 +91,22 @@ export class DavProperties implements DavPropertyService {
           element: createDavProperty("sync-token", token),
         });
       add("supported-report-set", supportedReportSetProperty());
-      const quota = await this.quota.getQuota(path);
-      if (quota) {
-        add("quota-available-bytes", {
-          element: createDavProperty(
-            "quota-available-bytes",
-            String(quota.availableBytes),
-          ),
-        });
-        add("quota-used-bytes", {
-          element: createDavProperty(
-            "quota-used-bytes",
-            String(quota.usedBytes),
-          ),
-        });
+      if (includeQuota) {
+        const quota = await this.quota.getQuota(path);
+        if (quota) {
+          add("quota-available-bytes", {
+            element: createDavProperty(
+              "quota-available-bytes",
+              String(quota.availableBytes),
+            ),
+          });
+          add("quota-used-bytes", {
+            element: createDavProperty(
+              "quota-used-bytes",
+              String(quota.usedBytes),
+            ),
+          });
+        }
       }
     }
     return properties;
@@ -114,7 +117,13 @@ export class DavProperties implements DavPropertyService {
     resource: Resource,
     request: DavPropfindRequest,
   ): Promise<readonly DavPropStat[]> {
-    const available = [...(await this.liveProperties(path, resource))];
+    const available = [
+      ...(await this.liveProperties(
+        path,
+        resource,
+        request.kind !== "allprop",
+      )),
+    ];
     for (const stored of await this.state.getProperties(path)) {
       const property = parseProperty(stored.xml);
       available.push({ name: propertyName(property.element), property });
