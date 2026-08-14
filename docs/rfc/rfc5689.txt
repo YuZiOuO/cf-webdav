@@ -1,9 +1,3 @@
-
-
-
-
-
-
 Network Working Group                                           C. Daboo
 Request for Comments: 5689                                    Apple Inc.
 Updates: 4791, 4918                                       September 2009

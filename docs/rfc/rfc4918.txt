@@ -1,9 +1,3 @@
-
-
-
-
-
-
 Network Working Group                                  L. Dusseault, Ed.
 Request for Comments: 4918                                   CommerceNet
 Obsoletes: 2518                                                June 2007

@@ -1,5 +1,6 @@
 {
   "name": "cf-webdav",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",

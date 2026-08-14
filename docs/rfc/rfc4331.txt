@@ -1,9 +1,3 @@
-
-
-
-
-
-
 Network Working Group                                          B. Korver
 Request for Comments: 4331                             Network Resonance
 Category: Standards Track                                   L. Dusseault
