@@ -15,7 +15,7 @@ import type {
   LockScope,
 } from "../interfaces/webdav/rfc4918";
 
-const DAV_NAMESPACE = "DAV:";
+export const DAV_NAMESPACE = "DAV:";
 
 type DavElement = Element;
 

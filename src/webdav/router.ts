@@ -12,7 +12,7 @@ import {
   parsePropfind,
   parseProppatch,
   parseSyncCollection,
-} from "./dav_xml";
+} from "./xml";
 import { FileSystemError } from "../filesystem/errors";
 import {
   ObjectStoreFileSystem,
@@ -24,12 +24,32 @@ import type {
   ReadFileOptions,
 } from "../interfaces/file_system";
 import type { ByteRange } from "../interfaces/object_store";
-import type { DavPropfindRequest } from "../interfaces/webdav/rfc4918";
-import type { LockToken } from "../interfaces/webdav/rfc4918";
+import type {
+  DavPropfindRequest,
+  DavPropertyService,
+  LockManager,
+  LockToken,
+} from "../interfaces/webdav/rfc4918";
 import type { SyncToken } from "../interfaces/webdav/rfc6578";
+import type { SyncCollection } from "../interfaces/webdav/rfc6578";
+import type { QuotaProvider } from "../interfaces/webdav/rfc4331";
+import type { ExtendedMkcol } from "../interfaces/webdav/rfc5689";
 import { R2ObjectStore } from "../object-store/r2";
-import { parent, toPath, href } from "../filesystem/path";
-import { WebDav } from "./service";
+import { toPath, href } from "../filesystem/path";
+import { DavLocks } from "./locks";
+import { DavMkcol } from "./mkcol";
+import { DavProperties } from "./properties";
+import { UnlimitedQuotaProvider } from "./quota";
+import { DavSync } from "./sync";
+import { ifHeaderMatches, parseIfHeader } from "./if";
+
+interface DavServices {
+  properties: DavPropertyService;
+  locks: LockManager;
+  sync: SyncCollection;
+  quota: QuotaProvider;
+  mkcol: ExtendedMkcol;
+}
 
 const ALLOW =
   "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT";
@@ -41,28 +61,26 @@ const app = new Hono<{
     WEBDAV_USERNAME: string;
     WEBDAV_PASSWORD: string;
   };
-  Variables: { path: Path; filesystem: FileSystem; webdav: WebDav };
+  Variables: { path: Path; filesystem: FileSystem; dav: DavServices };
 }>();
 
-const parseIfTokens = (header: string) =>
-  header.match(/<([^>]+)>/g)?.map((value) => value.slice(1, -1).trim()) ?? [];
-
-const parseIfEtags = (header: string) =>
-  header.match(/\[([^\]]+)\]/g)?.flatMap((value) =>
-    value
-      .slice(1, -1)
-      .split(",")
-      .map((etag) => etag.trim()),
-  ) ?? [];
-
 const isLockedWithoutToken = async (
-  webdav: WebDav,
+  locks: LockManager,
   path: Path,
   ifHeader: string | undefined,
 ) => {
-  const tokens = ifHeader ? parseIfTokens(ifHeader) : [];
-  const locks = await webdav.getLocks(path);
-  return locks.length && !locks.some((lock) => tokens.includes(lock.token));
+  const active = await locks.getLocks(path);
+  if (!active.length) return false;
+  if (!ifHeader) return true;
+  const header = parseIfHeader(ifHeader);
+  const submitted = header.flatMap((list) =>
+    list.conditions.flatMap((condition) =>
+      condition.kind === "state-token" ? [condition.token] : [],
+    ),
+  );
+  return !submitted.some((token) =>
+    active.some((lock) => lock.token === token),
+  );
 };
 
 const parseRange = (header: string | undefined): ByteRange | undefined => {
@@ -86,6 +104,7 @@ app.onError((error, c) => {
       "parent-not-found": 409,
       "not-directory": 405,
       "not-file": 405,
+      "invalid-if": 400,
       "directory-not-empty": 409,
       locked: 423,
       "precondition-failed": 412,
@@ -114,7 +133,16 @@ app.use("*", async (c, next) => {
       "filesystem",
       new ObjectStoreFileSystem(new R2ObjectStore(c.env.BUCKET), state),
     );
-    c.set("webdav", new WebDav(state));
+    const locks = new DavLocks(state);
+    const sync = new DavSync(state);
+    const quota = new UnlimitedQuotaProvider();
+    c.set("dav", {
+      properties: new DavProperties(state, locks, sync, quota),
+      locks,
+      sync,
+      quota,
+      mkcol: new DavMkcol(state),
+    });
   } catch {
     return c.text("Invalid path", 400);
   }
@@ -159,11 +187,15 @@ app.on("PROPFIND", "*", async (c) => {
     }
   }
 
-  const webdav = c.get("webdav");
+  const dav = c.get("dav");
   const responses = await Promise.all(
     resources.map(async (item) => ({
       href: href(item.path, item.resource.kind === "directory"),
-      propstats: await webdav.propfind(item.path, item.resource, request),
+      propstats: await dav.properties.propfind(
+        item.path,
+        item.resource,
+        request,
+      ),
     })),
   );
   return c.body(multistatus(responses), 207, XML);
@@ -174,13 +206,13 @@ app.on("PROPPATCH", "*", async (c) => {
   const filesystem = c.get("filesystem");
   const resource = await filesystem.stat(path);
   if (!resource) return c.text("Not Found", 404);
-  if (await isLockedWithoutToken(c.get("webdav"), path, c.req.header("if")))
+  if (await isLockedWithoutToken(c.get("dav").locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
   const body = await c.req.text();
   if (!isValidXml(body)) return c.text("Invalid XML", 400);
   const propstats = await c
-    .get("webdav")
-    .proppatch(path, resource, parseProppatch(body));
+    .get("dav")
+    .properties.proppatch(path, resource, parseProppatch(body));
   return c.body(
     multistatus([
       { href: href(path, resource.kind === "directory"), propstats },
@@ -211,19 +243,17 @@ app.on(["GET", "HEAD"], "*", async (c) => {
   });
   if (content.file.contentType)
     headers.set("Content-Type", content.file.contentType);
-  const status = content.range ? 206 : 200;
+  const range = content.range;
+  const status = range ? 206 : 200;
+  const end = range?.end ?? content.file.size - 1;
   headers.set(
     "Content-Length",
-    String(
-      content.range
-        ? (content.range.end as number) - content.range.start + 1
-        : content.file.size,
-    ),
+    String(range ? end - range.start + 1 : content.file.size),
   );
-  if (content.range)
+  if (range)
     headers.set(
       "Content-Range",
-      `bytes ${content.range.start}-${content.range.end as number}/${content.file.size}`,
+      `bytes ${range.start}-${end}/${content.file.size}`,
     );
   if (c.req.method === "HEAD") return c.body(null, { status, headers });
   return c.body(content.body, { status, headers });
@@ -237,41 +267,44 @@ app.put("*", async (c) => {
   if (existing?.kind === "directory")
     return c.text("Collection exists", 405, { Allow: ALLOW });
 
-  const webdav = c.get("webdav");
+  const dav = c.get("dav");
   const ifHeader = c.req.header("if");
-  const tokens = ifHeader ? parseIfTokens(ifHeader) : [];
-  const locks = await webdav.getLocks(path);
-  const activeLockTokens = new Set<string>(locks.map((lock) => lock.token));
-  if (locks.length && !tokens.some((token) => activeLockTokens.has(token)))
-    return c.text("Resource is locked", 423);
-  if (
-    !locks.length &&
-    tokens.some(
-      (token) =>
-        !/^https?:\/\//.test(token) && !token.startsWith("urn:cf-webdav:sync:"),
-    )
-  )
-    return c.body(null, 412);
+  const locks = await dav.locks.getLocks(path);
   if (ifHeader) {
-    const etags = parseIfEtags(ifHeader);
-    if (etags.length && !etags.includes(existing?.etag ?? ""))
-      return c.body(null, 412);
-    const syncToken = tokens.find((token) =>
-      token.startsWith("urn:cf-webdav:sync:"),
+    const header = parseIfHeader(ifHeader);
+    const submitted = header.flatMap((list) =>
+      list.conditions.flatMap((condition) =>
+        condition.kind === "state-token" ? [condition.token] : [],
+      ),
     );
     if (
-      syncToken &&
-      syncToken !== (await webdav.getSyncToken(parent(path) as Path))
+      locks.length &&
+      !submitted.some((token) => locks.some((lock) => lock.token === token))
     )
+      return c.text("Resource is locked", 423);
+
+    const contextFor = async (target: Path) => {
+      const resource = await filesystem.stat(target);
+      const targetLocks = await dav.locks.getLocks(target);
+      return {
+        etag: resource?.etag,
+        lockTokens: new Set(targetLocks.map((lock) => lock.token)),
+        ...(resource?.kind === "directory"
+          ? { syncToken: await dav.sync.getSyncToken(target) }
+          : {}),
+      };
+    };
+    if (!(await ifHeaderMatches(header, path, contextFor)))
       return c.body(null, 412);
+  } else if (locks.length) {
+    return c.text("Resource is locked", 423);
   }
 
+  const contentType = c.req.header("content-type");
   const file = await filesystem.writeFile(path, {
     body: c.req.raw.body ?? emptyBody(),
     size: Number(c.req.header("content-length") ?? 0),
-    ...(c.req.header("content-type")
-      ? { contentType: c.req.header("content-type")! }
-      : {}),
+    ...(contentType ? { contentType } : {}),
   });
   return c.body(null, existing ? 204 : 201, {
     ETag: file.etag,
@@ -283,7 +316,7 @@ app.delete("*", async (c) => {
   const path = c.get("path");
   if (path === "/") return c.text("Cannot delete root collection", 403);
   const filesystem = c.get("filesystem");
-  if (await isLockedWithoutToken(c.get("webdav"), path, c.req.header("if")))
+  if (await isLockedWithoutToken(c.get("dav").locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
   const target = await filesystem.stat(path);
   if (!target) return c.text("Not Found", 404);
@@ -302,7 +335,7 @@ app.on("MKCOL", "*", async (c) => {
     if (!c.req.header("content-type")?.toLowerCase().includes("xml"))
       return c.text("MKCOL body is not supported", 415);
     if (!isValidXml(body)) return c.text("Invalid XML", 400);
-    const result = await c.get("webdav").mkcol(path, parseMkcol(body));
+    const result = await c.get("dav").mkcol.mkcol(path, parseMkcol(body));
     if ("propstats" in result)
       return c.body(mkcolResponse(result.propstats), 403, XML);
     return c.body(null, 201, { Location: c.req.url, ETag: result.etag });
@@ -333,7 +366,7 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
   const isMove = c.req.method === "MOVE";
   if (
     isMove &&
-    (await isLockedWithoutToken(c.get("webdav"), source, c.req.header("if")))
+    (await isLockedWithoutToken(c.get("dav").locks, source, c.req.header("if")))
   )
     return c.text("Resource is locked", 423);
   const depth = (c.req.header("depth") ?? "infinity").toLowerCase();
@@ -353,7 +386,7 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
   if (
     existing &&
     (await isLockedWithoutToken(
-      c.get("webdav"),
+      c.get("dav").locks,
       destination,
       c.req.header("if"),
     ))
@@ -378,7 +411,7 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
 app.on("LOCK", "*", async (c) => {
   const path = c.get("path");
   const filesystem = c.get("filesystem");
-  const webdav = c.get("webdav");
+  const locks = c.get("dav").locks;
   const existing = await filesystem.stat(path);
   const timeoutHeader =
     c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
@@ -398,10 +431,10 @@ app.on("LOCK", "*", async (c) => {
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
 
   const lock = token
-    ? await webdav.refresh(path, token as LockToken, seconds)
+    ? await locks.refresh(path, token as LockToken, seconds)
     : await (async () => {
         const info = parseLockInfo(body);
-        return webdav.lock(path, {
+        return locks.lock(path, {
           scope: info.scope,
           depth: depth,
           ...(seconds === undefined ? {} : { timeout: seconds }),
@@ -424,7 +457,7 @@ app.on("UNLOCK", "*", async (c) => {
     ?.match(/^<([^>]+)>$/)?.[1]
     ?.trim();
   if (!token) return c.text("Lock token does not match", 400);
-  await c.get("webdav").unlock(c.get("path"), token as LockToken);
+  await c.get("dav").locks.unlock(c.get("path"), token as LockToken);
   return c.body(null, 204);
 });
 
@@ -437,7 +470,7 @@ app.on("REPORT", "*", async (c) => {
   if (request.syncLevel !== "1" && request.syncLevel !== "infinite")
     return c.text("Invalid sync-level", 400);
 
-  const result = await c.get("webdav").sync(path, {
+  const result = await c.get("dav").sync.sync(path, {
     ...(request.syncToken ? { syncToken: request.syncToken as SyncToken } : {}),
     syncLevel: request.syncLevel,
   });
@@ -449,8 +482,8 @@ app.on("REPORT", "*", async (c) => {
         ? {
             href: href(change.path, change.resource.kind === "directory"),
             propstats: await c
-              .get("webdav")
-              .propfind(change.path, change.resource, {
+              .get("dav")
+              .properties.propfind(change.path, change.resource, {
                 kind: "prop",
                 names: request.properties,
               }),
