@@ -303,7 +303,7 @@ export class FileSystemState extends DurableObject {
   }
 
   private subtree(path: string) {
-    const prefix = `${path}/`;
+    const prefix = path === ROOT ? ROOT : `${path}/`;
     return this.ctx.storage.sql
       .exec<ResourceRow>(
         `SELECT path, id, kind, etag, created_at, last_modified, object_key,
@@ -917,7 +917,7 @@ export class FileSystemState extends DurableObject {
 
   usedBytes(path: string) {
     return this.transaction(() => {
-      const prefix = `${path}/`;
+      const prefix = path === ROOT ? ROOT : `${path}/`;
       return this.ctx.storage.sql
         .exec<{ used_bytes: number }>(
           `SELECT COALESCE(SUM(size), 0) AS used_bytes
