@@ -7,11 +7,10 @@ import type {
   ResourceId,
   WriteFileOptions,
 } from "../../../interfaces/file_system";
-import type { ObjectKey } from "../../../interfaces/object_store";
-import { objectKey } from "../helper";
+import { deleteReleasedObjects, objectKey } from "../helper";
 import { resourceId, toResource } from "../resource";
 import { unwrapState } from "../../meta/helper";
-import type { StateResult, StoredFile } from "../../meta";
+import type { StoredFile } from "../../meta";
 import type { FileSystemDependencies } from "../helper";
 
 export const writeFile = async (
@@ -27,35 +26,27 @@ export const writeFile = async (
   const id = (existing?.id as ResourceId | undefined) ?? resourceId();
   const key = objectKey(id);
   const stored = await deps.objects.put(key, data);
-  let result: StateResult<{
-    resource: StoredFile;
-    replacedObjectKey?: string;
-  }>;
 
+  let written: { resource: StoredFile; releasedObjectKeys: string[] };
   try {
-    result = await deps.state.writeFile(
-      path,
-      {
-        id,
-        objectKey: key,
-        size: stored.size,
-        ...(data.contentType ? { contentType: data.contentType } : {}),
-      },
-      options?.preconditions,
+    written = unwrapState(
+      await deps.state.writeFile(
+        path,
+        {
+          id,
+          objectKey: key,
+          size: stored.size,
+          ...(data.contentType ? { contentType: data.contentType } : {}),
+        },
+        options?.preconditions,
+      ),
     );
   } catch (error) {
-    await deps.objects.delete(key);
+    await deleteReleasedObjects(deps.objects, [key]);
     throw error;
   }
 
-  const written = unwrapState(result);
-  if (written.replacedObjectKey) {
-    try {
-      await deps.objects.delete(written.replacedObjectKey as ObjectKey);
-    } catch (error) {
-      console.error("Unable to delete replaced object", error);
-    }
-  }
+  await deleteReleasedObjects(deps.objects, written.releasedObjectKeys);
   return toResource(written.resource) as File;
 };
 

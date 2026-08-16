@@ -85,15 +85,6 @@ export interface CopyPlan {
   replaced: StoredResource[];
 }
 
-export type CopyEntryResource =
-  | (Omit<StoredFile, "etag"> & { etag?: EntityTag })
-  | (Omit<StoredDirectory, "etag"> & { etag?: EntityTag });
-
-export interface CopyEntry {
-  sourcePath: string;
-  resource: CopyEntryResource;
-}
-
 export type StoredSyncChange =
   | { kind: "changed"; path: string; resource: StoredResource }
   | { kind: "removed"; path: string };

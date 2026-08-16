@@ -4,7 +4,6 @@ import { isDescendant, name, parent, remap } from "../vfs/path";
 import { matchesPreconditions, newEntityTag } from "./helper";
 import {
   ROOT,
-  type CopyEntry,
   type CopyPlan,
   type DirectoryCreate,
   type FileWrite,
@@ -40,6 +39,12 @@ interface RevisionRow {
   [key: string]: SqlStorageValue;
 }
 
+interface ObjectRefRow {
+  object_key: string;
+  ref_count: number;
+  [key: string]: SqlStorageValue;
+}
+
 export class FileSystemState extends DurableObject {
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     super(ctx, env);
@@ -58,6 +63,19 @@ export class FileSystemState extends DurableObject {
           size INTEGER,
           content_type TEXT
         )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_object_refs (
+          object_key TEXT PRIMARY KEY,
+          ref_count INTEGER NOT NULL CHECK (ref_count > 0)
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO fs_object_refs (object_key, ref_count)
+         SELECT object_key, COUNT(*)
+         FROM fs_resources
+         WHERE kind = 'file' AND object_key IS NOT NULL
+         GROUP BY object_key`,
       );
       ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_changes (
@@ -179,6 +197,73 @@ export class FileSystemState extends DurableObject {
     }
   }
 
+  private retainObjectRef(objectKey: string) {
+    const existing = this.ctx.storage.sql
+      .exec<ObjectRefRow>(
+        "SELECT object_key, ref_count FROM fs_object_refs WHERE object_key = ?",
+        objectKey,
+      )
+      .toArray()[0];
+    if (existing) {
+      this.ctx.storage.sql.exec(
+        "UPDATE fs_object_refs SET ref_count = ref_count + 1 WHERE object_key = ?",
+        objectKey,
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO fs_object_refs (object_key, ref_count) VALUES (?, 1)",
+        objectKey,
+      );
+    }
+  }
+
+  private releaseObjectRefs(resources: readonly StoredResource[]): string[] {
+    const releases = new Map<string, number>();
+    for (const resource of resources) {
+      if (resource.kind !== "file" || !resource.objectKey) continue;
+      releases.set(
+        resource.objectKey,
+        (releases.get(resource.objectKey) ?? 0) + 1,
+      );
+    }
+
+    const released: string[] = [];
+    for (const [objectKey, releaseCount] of releases) {
+      const reference = this.ctx.storage.sql
+        .exec<ObjectRefRow>(
+          "SELECT object_key, ref_count FROM fs_object_refs WHERE object_key = ?",
+          objectKey,
+        )
+        .toArray()[0];
+      if (!reference) {
+        console.error("Missing object reference", objectKey);
+        continue;
+      }
+      if (releaseCount > reference.ref_count) {
+        console.error(
+          "Object reference count underflow",
+          objectKey,
+          releaseCount,
+          reference.ref_count,
+        );
+      }
+      if (releaseCount >= reference.ref_count) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM fs_object_refs WHERE object_key = ?",
+          objectKey,
+        );
+        released.push(objectKey);
+      } else {
+        this.ctx.storage.sql.exec(
+          "UPDATE fs_object_refs SET ref_count = ref_count - ? WHERE object_key = ?",
+          releaseCount,
+          objectKey,
+        );
+      }
+    }
+    return released;
+  }
+
   private recordChanges(
     changes: readonly { path: string; kind: "changed" | "removed" }[],
   ) {
@@ -275,7 +360,10 @@ export class FileSystemState extends DurableObject {
     path: string,
     file: FileWrite,
     preconditions?: Preconditions,
-  ): StateResult<{ resource: StoredFile; replacedObjectKey?: string }> {
+  ): StateResult<{
+    resource: StoredFile;
+    releasedObjectKeys: string[];
+  }> {
     return this.transaction(() => {
       const parentResource = this.resource(parent(path));
       if (!parentResource) return { ok: false, error: "parent-not-found" };
@@ -300,6 +388,12 @@ export class FileSystemState extends DurableObject {
         ...(file.contentType ? { contentType: file.contentType } : {}),
         objectKey: file.objectKey,
       };
+      const releasedObjectKeys =
+        existing?.kind === "file" && existing.objectKey !== file.objectKey
+          ? this.releaseObjectRefs([existing])
+          : [];
+      const retainNewObject =
+        existing?.kind !== "file" || existing.objectKey !== file.objectKey;
       if (existing) {
         this.ctx.storage.sql.exec(
           `UPDATE fs_resources
@@ -317,15 +411,14 @@ export class FileSystemState extends DurableObject {
       } else {
         this.insertResource(resource);
       }
+      if (retainNewObject) this.retainObjectRef(file.objectKey);
       this.touch(parentResource.path, now);
       this.recordChanges([{ path, kind: "changed" }]);
       return {
         ok: true,
         value: {
           resource,
-          ...(existing?.objectKey
-            ? { replacedObjectKey: existing.objectKey }
-            : {}),
+          releasedObjectKeys,
         },
       };
     });
@@ -370,7 +463,10 @@ export class FileSystemState extends DurableObject {
   removeResource(
     path: string,
     recursive: boolean,
-  ): StateResult<StoredResource[]> {
+  ): StateResult<{
+    resources: StoredResource[];
+    releasedObjectKeys: string[];
+  }> {
     return this.transaction(() => {
       const resource = this.resource(path);
       if (!resource) return { ok: false, error: "not-found" };
@@ -378,6 +474,7 @@ export class FileSystemState extends DurableObject {
       if (resource.kind === "directory" && !recursive && resources.length > 1)
         return { ok: false, error: "directory-not-empty" };
 
+      const releasedObjectKeys = this.releaseObjectRefs(resources);
       this.removeMetadata(resources);
       this.touch(parent(path), Date.now());
       this.recordChanges(
@@ -386,28 +483,19 @@ export class FileSystemState extends DurableObject {
           kind: "removed" as const,
         })),
       );
-      return { ok: true, value: resources };
+      return { ok: true, value: { resources, releasedObjectKeys } };
     });
   }
 
-  copyPlan(
+  copyResource(
     sourcePath: string,
     destinationPath: string,
     recursive: boolean,
     overwrite: boolean,
-  ) {
-    return this.transaction(() =>
-      this.planCopy(sourcePath, destinationPath, recursive, overwrite),
-    );
-  }
-
-  commitCopy(
-    sourcePath: string,
-    destinationPath: string,
-    recursive: boolean,
-    overwrite: boolean,
-    entries: readonly CopyEntry[],
-  ): StateResult<{ resource: StoredResource; replaced: StoredResource[] }> {
+  ): StateResult<{
+    resource: StoredResource;
+    releasedObjectKeys: string[];
+  }> {
     return this.transaction(() => {
       const plan = this.planCopy(
         sourcePath,
@@ -417,35 +505,36 @@ export class FileSystemState extends DurableObject {
       );
       if (!plan.ok) return plan;
 
-      const sourcePaths = new Set(plan.value.source.map(({ path }) => path));
-      if (
-        entries.length !== sourcePaths.size ||
-        entries.some(({ sourcePath }) => !sourcePaths.has(sourcePath))
-      )
-        return { ok: false, error: "invalid-destination" };
-
+      const releasedObjectKeys = this.releaseObjectRefs(plan.value.replaced);
       this.removeMetadata(plan.value.replaced);
-      for (const { sourcePath, resource: entryResource } of entries) {
-        const resource: StoredResource =
-          entryResource.kind === "file"
-            ? { ...entryResource, etag: entryResource.etag ?? newEntityTag() }
-            : { ...entryResource, etag: entryResource.etag ?? newEntityTag() };
+      const now = Date.now();
+      for (const source of plan.value.source) {
+        const resource: StoredResource = {
+          ...source,
+          path: remap(sourcePath, destinationPath, source.path),
+          id: crypto.randomUUID(),
+          etag: newEntityTag(),
+          createdAt: now,
+          lastModified: now,
+        };
         this.insertResource(resource);
+        if (resource.kind === "file" && resource.objectKey)
+          this.retainObjectRef(resource.objectKey);
       }
-      this.touch(parent(destinationPath), Date.now());
+      this.touch(parent(destinationPath), now);
       this.recordChanges([
         ...plan.value.replaced.map((resource) => ({
           path: resource.path,
           kind: "removed" as const,
         })),
-        ...entries.map(({ resource }) => ({
-          path: resource.path,
+        ...plan.value.source.map((resource) => ({
+          path: remap(sourcePath, destinationPath, resource.path),
           kind: "changed" as const,
         })),
       ]);
       const resource = this.resource(destinationPath);
       return resource
-        ? { ok: true, value: { resource, replaced: plan.value.replaced } }
+        ? { ok: true, value: { resource, releasedObjectKeys } }
         : { ok: false, error: "not-found" };
     });
   }
@@ -454,11 +543,15 @@ export class FileSystemState extends DurableObject {
     sourcePath: string,
     destinationPath: string,
     overwrite: boolean,
-  ): StateResult<{ resource: StoredResource; replaced: StoredResource[] }> {
+  ): StateResult<{
+    resource: StoredResource;
+    releasedObjectKeys: string[];
+  }> {
     return this.transaction(() => {
       const plan = this.planCopy(sourcePath, destinationPath, true, overwrite);
       if (!plan.ok) return plan;
 
+      const releasedObjectKeys = this.releaseObjectRefs(plan.value.replaced);
       this.removeMetadata(plan.value.replaced);
       const moved = plan.value.source.map((resource) => ({
         previousPath: resource.path,
@@ -488,7 +581,7 @@ export class FileSystemState extends DurableObject {
       ]);
       const resource = this.resource(destinationPath);
       return resource
-        ? { ok: true, value: { resource, replaced: plan.value.replaced } }
+        ? { ok: true, value: { resource, releasedObjectKeys } }
         : { ok: false, error: "not-found" };
     });
   }
