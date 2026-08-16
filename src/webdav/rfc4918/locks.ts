@@ -1,16 +1,21 @@
-import type { Path } from "../interfaces/file_system";
+import type { Path } from "../../interfaces/file_system";
 import type {
   Lock,
   LockManager,
   LockRequest,
-  LockScope,
   LockToken,
-} from "../interfaces/webdav/rfc4918";
-import { parseProperty, serializeProperty } from "./xml";
-import { unwrapState } from "../filesystem/meta/helper";
-import type { FileSystemState, StoredLock } from "../filesystem/meta";
+} from "../../interfaces/webdav/rfc4918";
+import { parseProperty, serializeProperty } from "../core/xml";
+import type { WebDavLock, WebDavState } from "../core/state";
 
-const toLock = (lock: StoredLock): Lock => ({
+const unwrapState = <T>(
+  result: { ok: true; value: T } | { ok: false; error: string },
+) => {
+  if (result.ok) return result.value;
+  throw new Error(result.error);
+};
+
+const toLock = (lock: WebDavLock): Lock => ({
   token: lock.token as LockToken,
   root: lock.root as Path,
   scope: lock.scope,
@@ -20,10 +25,10 @@ const toLock = (lock: StoredLock): Lock => ({
 });
 
 export class DavLocks implements LockManager {
-  constructor(private readonly state: DurableObjectStub<FileSystemState>) {}
+  constructor(private readonly state: DurableObjectStub<WebDavState>) {}
 
-  getSupportedLockScopes(): Promise<readonly LockScope[]> {
-    return Promise.resolve(["exclusive", "shared"]);
+  getSupportedLockScopes() {
+    return Promise.resolve(["exclusive", "shared"] as const);
   }
 
   async getLocks(path: Path) {

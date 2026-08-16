@@ -19,6 +19,7 @@ import { readFile, readdir, stat } from "./vfs/operations/read";
 import { remove } from "./vfs/operations/remove";
 import { mkdir, writeFile } from "./vfs/operations/write";
 import type { FileSystemState } from "./meta";
+import { toResource } from "./vfs/resource";
 
 export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
   private readonly objects: ObjectStore;
@@ -57,15 +58,30 @@ export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
     return remove(this.deps(), path, options);
   }
 
-  copy(source: Path, destination: Path, options: CopyOptions) {
-    return copy(this.deps(), source, destination, options);
+  async copy(source: Path, destination: Path, options: CopyOptions) {
+    const resource = await copy(this.deps(), source, destination, options);
+    return resource;
   }
 
-  move(source: Path, destination: Path, options: MoveOptions) {
-    return move(this.deps(), source, destination, options);
+  async move(source: Path, destination: Path, options: MoveOptions) {
+    const resource = await move(this.deps(), source, destination, options);
+    return resource;
   }
 
   async getQuota(path: Path): Promise<StorageQuota> {
     return { usedBytes: await this.state.usedBytes(path) };
+  }
+
+  async changesSince(path: Path, revision: number, level: "1" | "infinite") {
+    const result = await this.state.changesSince(path, revision, level);
+    if (!result.ok) throw new Error(result.error);
+    return {
+      revision: result.value.revision,
+      changes: result.value.changes.map((change) =>
+        change.kind === "changed"
+          ? { kind: "changed" as const, path: change.path as Path, resource: toResource(change.resource) }
+          : { kind: "removed" as const, path: change.path as Path },
+      ),
+    };
   }
 }

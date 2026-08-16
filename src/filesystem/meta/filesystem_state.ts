@@ -10,12 +10,8 @@ import {
   type FileWrite,
   type StoredDirectory,
   type StoredFile,
-  type StoredLock,
-  type StoredLockRequest,
-  type StoredProperty,
-  type StoredProppatchInstruction,
   type StoredResource,
-  type StoredSyncResult,
+  type StoredChangeResult,
   type StateResult,
 } from "./types";
 
@@ -29,23 +25,6 @@ interface ResourceRow {
   object_key: string | null;
   size: number | null;
   content_type: string | null;
-  [key: string]: SqlStorageValue;
-}
-
-interface PropertyRow {
-  namespace_uri: string;
-  local_name: string;
-  value_xml: string;
-  [key: string]: SqlStorageValue;
-}
-
-interface LockRow {
-  token: string;
-  root: string;
-  scope: StoredLock["scope"];
-  depth: StoredLock["depth"];
-  expires_at: number | null;
-  owner_xml: string | null;
   [key: string]: SqlStorageValue;
 }
 
@@ -78,25 +57,6 @@ export class FileSystemState extends DurableObject {
           object_key TEXT,
           size INTEGER,
           content_type TEXT
-        )`,
-      );
-      ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS fs_properties (
-          resource_path TEXT NOT NULL,
-          namespace_uri TEXT NOT NULL,
-          local_name TEXT NOT NULL,
-          value_xml TEXT NOT NULL,
-          PRIMARY KEY (resource_path, namespace_uri, local_name)
-        )`,
-      );
-      ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS fs_locks (
-          token TEXT PRIMARY KEY,
-          root TEXT NOT NULL,
-          scope TEXT NOT NULL,
-          depth TEXT NOT NULL,
-          expires_at INTEGER,
-          owner_xml TEXT
         )`,
       );
       ctx.storage.sql.exec(
@@ -213,14 +173,6 @@ export class FileSystemState extends DurableObject {
   private removeMetadata(resources: readonly StoredResource[]) {
     for (const resource of resources) {
       this.ctx.storage.sql.exec(
-        "DELETE FROM fs_properties WHERE resource_path = ?",
-        resource.path,
-      );
-      this.ctx.storage.sql.exec(
-        "DELETE FROM fs_locks WHERE root = ?",
-        resource.path,
-      );
-      this.ctx.storage.sql.exec(
         "DELETE FROM fs_resources WHERE path = ?",
         resource.path,
       );
@@ -250,10 +202,6 @@ export class FileSystemState extends DurableObject {
     return this.ctx.storage.sql
       .exec<RevisionRow>("SELECT revision FROM fs_metadata WHERE id = 1")
       .one().revision;
-  }
-
-  private syncToken() {
-    return `urn:cf-webdav:sync:${this.revision()}`;
   }
 
   private planCopy(
@@ -288,37 +236,6 @@ export class FileSystemState extends DurableObject {
         replaced: destination ? this.subtree(destinationPath) : [],
       },
     };
-  }
-
-  private activeLocks(now: number) {
-    this.ctx.storage.sql.exec(
-      "DELETE FROM fs_locks WHERE expires_at IS NOT NULL AND expires_at <= ?",
-      now,
-    );
-    return this.ctx.storage.sql
-      .exec<LockRow>(
-        "SELECT token, root, scope, depth, expires_at, owner_xml FROM fs_locks",
-      )
-      .toArray()
-      .map((lock) => ({
-        token: lock.token,
-        root: lock.root,
-        scope: lock.scope,
-        depth: lock.depth,
-        ...(lock.expires_at === null
-          ? {}
-          : {
-              timeout: Math.max(0, Math.ceil((lock.expires_at - now) / 1000)),
-            }),
-        ...(lock.owner_xml ? { owner: lock.owner_xml } : {}),
-      }));
-  }
-
-  private lockCovers(lock: StoredLock, path: string) {
-    return (
-      lock.root === path ||
-      (lock.depth === "infinity" && isDescendant(path, lock.root))
-    );
   }
 
   readResource(
@@ -425,30 +342,6 @@ export class FileSystemState extends DurableObject {
     });
   }
 
-  createDirectoryWithProperties(
-    path: string,
-    directory: DirectoryCreate,
-    properties: readonly StoredProperty[],
-  ): StateResult<StoredDirectory> {
-    return this.transaction(() => {
-      const created = this.insertDirectory(path, directory);
-      if (!created.ok) return created;
-      for (const property of properties) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO fs_properties
-           (resource_path, namespace_uri, local_name, value_xml)
-           VALUES (?, ?, ?, ?)`,
-          path,
-          property.namespaceURI,
-          property.localName,
-          property.xml,
-        );
-      }
-      this.recordChanges([{ path, kind: "changed" }]);
-      return created;
-    });
-  }
-
   private insertDirectory(
     path: string,
     directory: DirectoryCreate,
@@ -538,23 +431,6 @@ export class FileSystemState extends DurableObject {
             ? { ...entryResource, etag: entryResource.etag ?? newEntityTag() }
             : { ...entryResource, etag: entryResource.etag ?? newEntityTag() };
         this.insertResource(resource);
-        for (const property of this.ctx.storage.sql
-          .exec<PropertyRow>(
-            `SELECT namespace_uri, local_name, value_xml FROM fs_properties
-             WHERE resource_path = ? ORDER BY rowid`,
-            sourcePath,
-          )
-          .toArray()) {
-          this.ctx.storage.sql.exec(
-            `INSERT INTO fs_properties
-             (resource_path, namespace_uri, local_name, value_xml)
-             VALUES (?, ?, ?, ?)`,
-            resource.path,
-            property.namespace_uri,
-            property.local_name,
-            property.value_xml,
-          );
-        }
       }
       this.touch(parent(destinationPath), Date.now());
       this.recordChanges([
@@ -596,16 +472,6 @@ export class FileSystemState extends DurableObject {
           name(nextPath),
           previousPath,
         );
-        this.ctx.storage.sql.exec(
-          "UPDATE fs_properties SET resource_path = ? WHERE resource_path = ?",
-          nextPath,
-          previousPath,
-        );
-        this.ctx.storage.sql.exec(
-          "UPDATE fs_locks SET root = ? WHERE root = ?",
-          nextPath,
-          previousPath,
-        );
       }
       const now = Date.now();
       this.touch(parent(sourcePath), now);
@@ -627,168 +493,6 @@ export class FileSystemState extends DurableObject {
     });
   }
 
-  getProperties(path: string) {
-    return this.transaction(() =>
-      this.ctx.storage.sql
-        .exec<PropertyRow>(
-          `SELECT namespace_uri, local_name, value_xml FROM fs_properties
-           WHERE resource_path = ? ORDER BY rowid`,
-          path,
-        )
-        .toArray()
-        .map((property) => ({
-          namespaceURI: property.namespace_uri,
-          localName: property.local_name,
-          xml: property.value_xml,
-        })),
-    );
-  }
-
-  patchProperties(
-    path: string,
-    instructions: readonly StoredProppatchInstruction[],
-  ): StateResult<void> {
-    return this.transaction(() => {
-      if (!this.resource(path)) return { ok: false, error: "not-found" };
-      for (const instruction of instructions) {
-        const propertyName =
-          instruction.kind === "set" ? instruction.property : instruction.name;
-        this.ctx.storage.sql.exec(
-          `DELETE FROM fs_properties
-           WHERE resource_path = ? AND namespace_uri = ? AND local_name = ?`,
-          path,
-          propertyName.namespaceURI,
-          propertyName.localName,
-        );
-        if (instruction.kind === "set") {
-          this.ctx.storage.sql.exec(
-            `INSERT INTO fs_properties
-             (resource_path, namespace_uri, local_name, value_xml)
-             VALUES (?, ?, ?, ?)`,
-            path,
-            instruction.property.namespaceURI,
-            instruction.property.localName,
-            instruction.property.xml,
-          );
-        }
-      }
-      this.touch(path, Date.now());
-      this.recordChanges([{ path, kind: "changed" }]);
-      return { ok: true, value: undefined };
-    });
-  }
-
-  getLocks(path: string) {
-    return this.transaction(() => {
-      const now = Date.now();
-      return this.activeLocks(now).filter((lock) =>
-        this.lockCovers(lock, path),
-      );
-    });
-  }
-
-  createLock(
-    path: string,
-    request: StoredLockRequest,
-  ): StateResult<StoredLock> {
-    return this.transaction(() => {
-      const now = Date.now();
-      const conflict = this.activeLocks(now).some(
-        (lock) =>
-          (this.lockCovers(lock, path) ||
-            (request.depth === "infinity" && isDescendant(lock.root, path))) &&
-          (lock.scope === "exclusive" || request.scope === "exclusive"),
-      );
-      if (conflict) return { ok: false, error: "locked" };
-
-      let created: StoredFile | undefined;
-      if (!this.resource(path)) {
-        const parentResource = this.resource(parent(path));
-        if (!parentResource) return { ok: false, error: "parent-not-found" };
-        if (parentResource.kind !== "directory")
-          return { ok: false, error: "not-directory" };
-        created = {
-          path,
-          id: crypto.randomUUID(),
-          kind: "file",
-          etag: newEntityTag(),
-          createdAt: now,
-          lastModified: now,
-          size: 0,
-        };
-        this.insertResource(created);
-        this.touch(parentResource.path, now);
-      }
-
-      const lock: StoredLock = {
-        token: `opaquelocktoken:${crypto.randomUUID()}`,
-        root: path,
-        scope: request.scope,
-        depth: request.depth,
-        ...(request.timeout === undefined ? {} : { timeout: request.timeout }),
-        ...(request.owner ? { owner: request.owner } : {}),
-      };
-      this.ctx.storage.sql.exec(
-        `INSERT INTO fs_locks (token, root, scope, depth, expires_at, owner_xml)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        lock.token,
-        lock.root,
-        lock.scope,
-        lock.depth,
-        request.timeout === undefined ? null : now + request.timeout * 1000,
-        request.owner ?? null,
-      );
-      if (created)
-        this.recordChanges([{ path: created.path, kind: "changed" }]);
-      return { ok: true, value: lock };
-    });
-  }
-
-  refreshLock(
-    path: string,
-    token: string,
-    timeout?: number,
-  ): StateResult<StoredLock> {
-    return this.transaction(() => {
-      const now = Date.now();
-      const lock = this.activeLocks(now).find(
-        (candidate) =>
-          candidate.token === token && this.lockCovers(candidate, path),
-      );
-      if (!lock) return { ok: false, error: "locked" };
-      this.ctx.storage.sql.exec(
-        "UPDATE fs_locks SET expires_at = ? WHERE token = ?",
-        timeout === undefined ? null : now + timeout * 1000,
-        token,
-      );
-      return {
-        ok: true,
-        value: { ...lock, ...(timeout === undefined ? {} : { timeout }) },
-      };
-    });
-  }
-
-  unlock(path: string, token: string): StateResult<void> {
-    return this.transaction(() => {
-      const now = Date.now();
-      if (
-        !this.activeLocks(now).some(
-          (lock) => lock.token === token && this.lockCovers(lock, path),
-        )
-      )
-        return { ok: false, error: "precondition-failed" };
-      this.ctx.storage.sql.exec("DELETE FROM fs_locks WHERE token = ?", token);
-      return { ok: true, value: undefined };
-    });
-  }
-
-  getSyncToken(path: string) {
-    return this.transaction(() => {
-      const resource = this.resource(path);
-      return resource?.kind === "directory" ? this.syncToken() : undefined;
-    });
-  }
-
   usedBytes(path: string) {
     return this.transaction(() => {
       const prefix = path === ROOT ? ROOT : `${path}/`;
@@ -805,54 +509,23 @@ export class FileSystemState extends DurableObject {
     });
   }
 
-  sync(
+  changesSince(
     collectionPath: string,
-    token: string | undefined,
+    revision: number,
     level: "1" | "infinite",
-  ): StateResult<StoredSyncResult> {
+  ): StateResult<StoredChangeResult> {
     return this.transaction(() => {
       const collection = this.resource(collectionPath);
       if (!collection) return { ok: false, error: "not-found" };
       if (collection.kind !== "directory")
         return { ok: false, error: "not-directory" };
-
-      if (!token) {
-        const resources =
-          level === "1"
-            ? this.ctx.storage.sql
-                .exec<ResourceRow>(
-                  `SELECT path, id, kind, etag, created_at, last_modified, object_key,
-                          size, content_type
-                   FROM fs_resources WHERE parent_path = ? ORDER BY name`,
-                  collectionPath,
-                )
-                .toArray()
-                .map((row) => this.toResource(row))
-            : this.subtree(collectionPath).filter(
-                (resource) => resource.path !== collectionPath,
-              );
-        return {
-          ok: true,
-          value: {
-            changes: resources.map((resource) => ({
-              kind: "changed" as const,
-              path: resource.path,
-              resource,
-            })),
-            token: this.syncToken(),
-          },
-        };
-      }
-
-      const match = /^urn:cf-webdav:sync:(\d+)$/.exec(token);
-      if (!match || Number(match[1]) > this.revision())
+      if (revision > this.revision())
         return { ok: false, error: "invalid-sync-token" };
-
       const changes = new Map<string, ChangeRow>();
       for (const change of this.ctx.storage.sql
         .exec<ChangeRow>(
           "SELECT path, kind, revision FROM fs_changes WHERE revision > ? ORDER BY revision",
-          Number(match[1]),
+          revision,
         )
         .toArray()) {
         const inScope =
@@ -864,6 +537,7 @@ export class FileSystemState extends DurableObject {
       return {
         ok: true,
         value: {
+          revision: this.revision(),
           changes: [...changes.values()]
             .sort((left, right) => left.path.localeCompare(right.path))
             .map((change) => {
@@ -875,7 +549,6 @@ export class FileSystemState extends DurableObject {
                 ? { kind: "changed" as const, path: change.path, resource }
                 : { kind: "removed" as const, path: change.path };
             }),
-          token: this.syncToken(),
         },
       };
     });

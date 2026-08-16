@@ -102,3 +102,8 @@ export interface StoredSyncResult {
   changes: StoredSyncChange[];
   token: string;
 }
+
+export interface StoredChangeResult {
+  revision: number;
+  changes: StoredSyncChange[];
+}

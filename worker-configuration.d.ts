@@ -6,6 +6,7 @@ interface __BaseEnv_CloudflareBindings {
 	WEBDAV_USERNAME: string;
 	WEBDAV_PASSWORD: string;
 	FileSystemState: DurableObjectNamespace<import("./src/index").FileSystemState>;
+	WebDavState: DurableObjectNamespace<import("./src/index").WebDavState>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

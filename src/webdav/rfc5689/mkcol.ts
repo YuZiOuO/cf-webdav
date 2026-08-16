@@ -1,21 +1,22 @@
-import type { Directory, Path } from "../interfaces/file_system";
-import type { DavProperty } from "../interfaces/webdav/rfc4918";
+import type { Directory, FileSystem, Path } from "../../interfaces/file_system";
+import type { DavProperty } from "../../interfaces/webdav/rfc4918";
 import type {
   ExtendedMkcol,
   MkcolResponse,
-} from "../interfaces/webdav/rfc5689";
-import { toResource } from "../filesystem/vfs/resource";
-import { unwrapState } from "../filesystem/meta/helper";
-import type { FileSystemState } from "../filesystem/meta";
-import { DAV_NAMESPACE, propertyChildren, propertyName } from "./xml";
+} from "../../interfaces/webdav/rfc5689";
+import type { WebDavState } from "../core/state";
+import { DAV_NAMESPACE, propertyChildren, propertyName } from "../core/xml";
 import {
   protectedPropertyNames,
   propertyKey,
   storedProperty,
-} from "./property";
+} from "../core/properties";
 
 export class DavMkcol implements ExtendedMkcol {
-  constructor(private readonly state: DurableObjectStub<FileSystemState>) {}
+  constructor(
+    private readonly filesystem: FileSystem,
+    private readonly state: DurableObjectStub<WebDavState>,
+  ) {}
 
   async mkcol(
     path: Path,
@@ -51,14 +52,12 @@ export class DavMkcol implements ExtendedMkcol {
           ),
       )
       .map(storedProperty);
-    return toResource(
-      unwrapState(
-        await this.state.createDirectoryWithProperties(
-          path,
-          {},
-          deadProperties,
-        ),
-      ),
-    ) as Directory;
+    const directory = await this.filesystem.mkdir(path);
+    const result = await this.state.patchProperties(
+      path,
+      deadProperties.map((property) => ({ kind: "set" as const, property })),
+    );
+    if (!result.ok) throw new Error(result.error);
+    return directory;
   }
 }

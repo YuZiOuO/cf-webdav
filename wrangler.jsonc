@@ -15,12 +15,16 @@
         "name": "FileSystemState",
         "class_name": "FileSystemState",
       },
+      {
+        "name": "WebDavState",
+        "class_name": "WebDavState",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["FileSystemState"],
+      "new_sqlite_classes": ["FileSystemState", "WebDavState"],
     },
   ],
   "observability": {

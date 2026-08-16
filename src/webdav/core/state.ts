@@ -1,0 +1,332 @@
+import { DurableObject } from "cloudflare:workers";
+import { isDescendant } from "../../filesystem/vfs/path";
+import type { LockDepth, LockScope } from "../../interfaces/webdav/rfc4918";
+
+export interface WebDavProperty {
+  namespaceURI: string;
+  localName: string;
+  xml: string;
+}
+
+export interface WebDavLock {
+  token: string;
+  root: string;
+  scope: LockScope;
+  depth: LockDepth;
+  timeout?: number;
+  owner?: string;
+}
+
+interface WebDavLockRequest {
+  scope: LockScope;
+  depth: LockDepth;
+  timeout?: number;
+  owner?: string;
+}
+
+export type WebDavStateError =
+  | "not-found"
+  | "parent-not-found"
+  | "not-directory"
+  | "locked"
+  | "precondition-failed";
+
+export type WebDavStateResult<T> =
+  { ok: true; value: T } | { ok: false; error: WebDavStateError };
+
+interface LockRow {
+  token: string;
+  root: string;
+  scope: LockScope;
+  depth: LockDepth;
+  expires_at: number | null;
+  owner_xml: string | null;
+  [key: string]: SqlStorageValue;
+}
+
+interface PropertyRow {
+  resource_path: string;
+  namespace_uri: string;
+  local_name: string;
+  value_xml: string;
+  [key: string]: SqlStorageValue;
+}
+
+export class WebDavState extends DurableObject {
+  constructor(ctx: DurableObjectState, env: CloudflareBindings) {
+    super(ctx, env);
+    void ctx.blockConcurrencyWhile(() => {
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS dav_properties (
+        resource_path TEXT NOT NULL,
+        namespace_uri TEXT NOT NULL,
+        local_name TEXT NOT NULL,
+        value_xml TEXT NOT NULL,
+        PRIMARY KEY (resource_path, namespace_uri, local_name)
+      )`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS dav_locks (
+        token TEXT PRIMARY KEY,
+        root TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        depth TEXT NOT NULL,
+        expires_at INTEGER,
+        owner_xml TEXT
+      )`);
+      return Promise.resolve();
+    });
+  }
+
+  private transaction<T>(callback: () => T) {
+    return this.ctx.storage.transactionSync(callback);
+  }
+
+  getProperties(path: string) {
+    return this.transaction(() =>
+      this.ctx.storage.sql
+        .exec<PropertyRow>(
+          `SELECT namespace_uri, local_name, value_xml FROM dav_properties
+           WHERE resource_path = ? ORDER BY rowid`,
+          path,
+        )
+        .toArray()
+        .map((row) => ({
+          namespaceURI: row.namespace_uri,
+          localName: row.local_name,
+          xml: row.value_xml,
+        })),
+    );
+  }
+
+  patchProperties(
+    path: string,
+    instructions: readonly (
+      | { kind: "set"; property: WebDavProperty }
+      | {
+          kind: "remove";
+          name: Pick<WebDavProperty, "namespaceURI" | "localName">;
+        }
+    )[],
+  ): WebDavStateResult<void> {
+    return this.transaction(() => {
+      for (const instruction of instructions) {
+        const name =
+          instruction.kind === "set" ? instruction.property : instruction.name;
+        this.ctx.storage.sql.exec(
+          `DELETE FROM dav_properties WHERE resource_path = ?
+           AND namespace_uri = ? AND local_name = ?`,
+          path,
+          name.namespaceURI,
+          name.localName,
+        );
+        if (instruction.kind === "set") {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO dav_properties
+             (resource_path, namespace_uri, local_name, value_xml)
+             VALUES (?, ?, ?, ?)`,
+            path,
+            name.namespaceURI,
+            name.localName,
+            instruction.property.xml,
+          );
+        }
+      }
+      return { ok: true, value: undefined };
+    });
+  }
+
+  copyProperties(source: string, destination: string, recursive: boolean) {
+    return this.transaction(() => {
+      const prefix = recursive ? `${source}/` : `${source}`;
+      const rows = this.ctx.storage.sql
+        .exec<PropertyRow>(
+          `SELECT resource_path, namespace_uri, local_name, value_xml
+         FROM dav_properties WHERE resource_path = ? OR substr(resource_path, 1, ?) = ?`,
+          source,
+          prefix.length,
+          prefix,
+        )
+        .toArray();
+      for (const row of rows) {
+        const path =
+          row.resource_path === source
+            ? destination
+            : `${destination}${row.resource_path.slice(source.length)}`;
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO dav_properties
+           (resource_path, namespace_uri, local_name, value_xml) VALUES (?, ?, ?, ?)`,
+          path,
+          row.namespace_uri,
+          row.local_name,
+          row.value_xml,
+        );
+      }
+    });
+  }
+
+  moveProperties(source: string, destination: string) {
+    return this.transaction(() => {
+      const rows = this.ctx.storage.sql
+        .exec<PropertyRow>(
+          `SELECT resource_path, namespace_uri, local_name, value_xml
+         FROM dav_properties WHERE resource_path = ? OR substr(resource_path, 1, ?) = ?`,
+          source,
+          source.length + 1,
+          `${source}/`,
+        )
+        .toArray();
+      for (const row of rows) {
+        const path =
+          row.resource_path === source
+            ? destination
+            : `${destination}${row.resource_path.slice(source.length)}`;
+        this.ctx.storage.sql.exec(
+          "UPDATE dav_properties SET resource_path = ? WHERE resource_path = ? AND namespace_uri = ? AND local_name = ?",
+          path,
+          row.resource_path,
+          row.namespace_uri,
+          row.local_name,
+        );
+      }
+    });
+  }
+
+  removeProperties(path: string, recursive: boolean) {
+    return this.transaction(() => {
+      this.ctx.storage.sql.exec(
+        recursive
+          ? "DELETE FROM dav_properties WHERE resource_path = ? OR substr(resource_path, 1, ?) = ?"
+          : "DELETE FROM dav_properties WHERE resource_path = ?",
+        ...(recursive ? [path, path.length + 1, `${path}/`] : [path]),
+      );
+      this.ctx.storage.sql.exec(
+        recursive
+          ? "DELETE FROM dav_locks WHERE root = ? OR substr(root, 1, ?) = ?"
+          : "DELETE FROM dav_locks WHERE root = ?",
+        ...(recursive ? [path, path.length + 1, `${path}/`] : [path]),
+      );
+    });
+  }
+
+  private activeLocks(now: number) {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM dav_locks WHERE expires_at IS NOT NULL AND expires_at <= ?",
+      now,
+    );
+    return this.ctx.storage.sql
+      .exec<LockRow>(
+        "SELECT token, root, scope, depth, expires_at, owner_xml FROM dav_locks",
+      )
+      .toArray();
+  }
+
+  getLocks(path: string) {
+    return this.transaction(() =>
+      this.activeLocks(Date.now())
+        .filter(
+          (lock) =>
+            lock.root === path ||
+            (lock.depth === "infinity" && isDescendant(path, lock.root)),
+        )
+        .map((lock) => ({
+          token: lock.token,
+          root: lock.root,
+          scope: lock.scope,
+          depth: lock.depth,
+          ...(lock.expires_at === null
+            ? {}
+            : {
+                timeout: Math.max(
+                  0,
+                  Math.ceil((lock.expires_at - Date.now()) / 1000),
+                ),
+              }),
+          ...(lock.owner_xml ? { owner: lock.owner_xml } : {}),
+        })),
+    );
+  }
+
+  createLock(
+    path: string,
+    request: WebDavLockRequest,
+  ): WebDavStateResult<WebDavLock> {
+    return this.transaction(() => {
+      const now = Date.now();
+      const conflict = this.activeLocks(now).some(
+        (lock) =>
+          (lock.root === path ||
+            (lock.depth === "infinity" && isDescendant(path, lock.root)) ||
+            (request.depth === "infinity" && isDescendant(lock.root, path))) &&
+          (lock.scope === "exclusive" || request.scope === "exclusive"),
+      );
+      if (conflict) return { ok: false, error: "locked" };
+      const lock = {
+        token: `opaquelocktoken:${crypto.randomUUID()}`,
+        root: path,
+        scope: request.scope,
+        depth: request.depth,
+        ...(request.timeout === undefined ? {} : { timeout: request.timeout }),
+        ...(request.owner ? { owner: request.owner } : {}),
+      };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO dav_locks (token, root, scope, depth, expires_at, owner_xml)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        lock.token,
+        path,
+        request.scope,
+        request.depth,
+        typeof request.timeout === "number"
+          ? now + request.timeout * 1000
+          : null,
+        request.owner ?? null,
+      );
+      return { ok: true, value: lock };
+    });
+  }
+
+  refreshLock(
+    path: string,
+    token: string,
+    timeout?: number,
+  ): WebDavStateResult<WebDavLock> {
+    return this.transaction(() => {
+      const lock = this.activeLocks(Date.now()).find(
+        (candidate) =>
+          candidate.token === token &&
+          (candidate.root === path ||
+            (candidate.depth === "infinity" &&
+              isDescendant(path, candidate.root))),
+      );
+      if (!lock) return { ok: false, error: "locked" };
+      this.ctx.storage.sql.exec(
+        "UPDATE dav_locks SET expires_at = ? WHERE token = ?",
+        timeout === undefined ? null : Date.now() + timeout * 1000,
+        token,
+      );
+      return {
+        ok: true,
+        value: {
+          token: lock.token,
+          root: lock.root,
+          scope: lock.scope,
+          depth: lock.depth,
+          ...(timeout === undefined ? {} : { timeout }),
+          ...(lock.owner_xml ? { owner: lock.owner_xml } : {}),
+        },
+      };
+    });
+  }
+
+  unlock(path: string, token: string): WebDavStateResult<void> {
+    return this.transaction(() => {
+      const lock = this.activeLocks(Date.now()).find(
+        (candidate) =>
+          candidate.token === token &&
+          (candidate.root === path ||
+            (candidate.depth === "infinity" &&
+              isDescendant(path, candidate.root))),
+      );
+      if (!lock) return { ok: false, error: "precondition-failed" };
+      this.ctx.storage.sql.exec("DELETE FROM dav_locks WHERE token = ?", token);
+      return { ok: true, value: undefined };
+    });
+  }
+}
