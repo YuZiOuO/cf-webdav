@@ -79,7 +79,11 @@ export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
       revision: result.value.revision,
       changes: result.value.changes.map((change) =>
         change.kind === "changed"
-          ? { kind: "changed" as const, path: change.path as Path, resource: toResource(change.resource) }
+          ? {
+              kind: "changed" as const,
+              path: change.path as Path,
+              resource: toResource(change.resource),
+            }
           : { kind: "removed" as const, path: change.path as Path },
       ),
     };
