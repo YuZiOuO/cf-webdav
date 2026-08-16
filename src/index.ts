@@ -6,8 +6,8 @@ import browser from "./browser";
 const app = new Hono<{ Bindings: CloudflareBindings }>();
 app.use("*", (c, next) =>
   basicAuth({
-    username: c.env.WEBDAV_USERNAME,
-    password: c.env.WEBDAV_PASSWORD,
+    username: c.env.USERNAME,
+    password: c.env.PASSWORD,
   })(c, next),
 );
 app.route("/", browser);

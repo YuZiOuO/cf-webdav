@@ -3,8 +3,8 @@
 // Runtime types generated with workerd@1.20260722.1 2026-07-27 nodejs_compat
 interface __BaseEnv_CloudflareBindings {
 	BUCKET: R2Bucket;
-	WEBDAV_USERNAME: string;
-	WEBDAV_PASSWORD: string;
+	USERNAME: string;
+	PASSWORD: string;
 	FileSystemState: DurableObjectNamespace<import("./src/index").FileSystemState>;
 	WebDavState: DurableObjectNamespace<import("./src/index").WebDavState>;
 }
@@ -20,7 +20,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "WEBDAV_USERNAME" | "WEBDAV_PASSWORD">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "USERNAME" | "PASSWORD">> {}
 }
 
 // Begin runtime types

@@ -16,8 +16,8 @@ const READ_SIZE = 4 * 1024;
 const BATCH_SIZE = 50;
 
 const baseUrl = normalizeBaseUrl(__ENV.WEBDAV_URL);
-const username = requireEnv("WEBDAV_USERNAME");
-const password = requireEnv("WEBDAV_PASSWORD");
+const username = requireEnv("USERNAME");
+const password = requireEnv("PASSWORD");
 const cleanupPrefix = __ENV.PERF_CLEANUP_PREFIX;
 const stageSeconds = positiveInteger(
   __ENV.PERF_STAGE_SECONDS,

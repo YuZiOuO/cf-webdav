@@ -63,9 +63,9 @@ export class WebDavTestClient {
           "--persist-to",
           join(this.stateDirectory, "state"),
           "--var",
-          "WEBDAV_USERNAME:rfc-test",
+          "USERNAME:rfc-test",
           "--var",
-          "WEBDAV_PASSWORD:rfc-test",
+          "PASSWORD:rfc-test",
         ],
         { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
       );

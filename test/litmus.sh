@@ -26,8 +26,8 @@ start_server() {
   XDG_CONFIG_HOME="$runtime_dir/config" bunx wrangler dev \
     --persist-to "$runtime_dir/state" \
     --log-level warn \
-    --var "WEBDAV_USERNAME:$litmus_username" \
-    --var "WEBDAV_PASSWORD:$litmus_password" &
+    --var "USERNAME:$litmus_username" \
+    --var "PASSWORD:$litmus_password" &
   server_pid=$!
 }
 
