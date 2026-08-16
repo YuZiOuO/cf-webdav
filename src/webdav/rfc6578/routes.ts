@@ -1,7 +1,7 @@
 import type { SyncToken } from "../../interfaces";
 import type { DavEnv } from "../core/types";
 import { Hono } from "hono";
-import { toHref } from "../core/path";
+import { toHref } from "../../path";
 import { isValidXml } from "../core/xml";
 import { parseSyncCollection, syncMultistatus } from "./xml";
 

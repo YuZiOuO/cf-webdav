@@ -7,7 +7,7 @@ import { ObjectStoreFileSystem } from "../filesystem";
 import { R2ObjectStore } from "../filesystem";
 import { DavLocks } from "./rfc4918/locks";
 import { DavProperties } from "./core/properties";
-import { decodeWebDavPath } from "./core/path";
+import { decodePath } from "../path";
 import { DavQuotaProperties, FileSystemQuotaProvider } from "./rfc4331/quota";
 import { DavMkcol } from "./rfc5689/mkcol";
 import { DavSync, DavSyncProperties } from "./rfc6578/sync";
@@ -48,7 +48,7 @@ app.onError((error, c) => {
 
 app.use("*", async (c, next) => {
   try {
-    const path = decodeWebDavPath(new URL(c.req.url).pathname);
+    const path = decodePath(new URL(c.req.url).pathname);
     const webDavState = c.env.WebDavState.getByName("root");
     const filesystem = new ObjectStoreFileSystem(
       new R2ObjectStore(c.env.BUCKET),

@@ -6,7 +6,7 @@ import type {
   Path,
 } from "../../interfaces";
 import { FileSystemError } from "../../filesystem";
-import { decodeWebDavPath } from "../core/path";
+import { decodePath } from "../../path";
 
 interface IfMatchContext {
   etag?: EntityTag;
@@ -93,7 +93,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     const tag = parseTag();
     try {
       const pathname = tag.startsWith("/") ? tag : new URL(tag).pathname;
-      return decodeWebDavPath(pathname);
+      return decodePath(pathname);
     } catch {
       throw new FileSystemError("invalid-if", "Invalid If header");
     }

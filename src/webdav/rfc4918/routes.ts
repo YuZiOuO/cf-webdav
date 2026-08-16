@@ -1,7 +1,5 @@
 import { dirname, join } from "node:path/posix";
-import { FileSystemError } from "../../filesystem";
 import type {
-  ByteRange,
   DavPropfindRequest,
   LockManager,
   LockToken,
@@ -10,8 +8,9 @@ import type {
 } from "../../interfaces";
 import type { DavEnv } from "../core/types";
 import { Hono } from "hono";
+import rangeParser from "range-parser";
 import { ifHeaderMatches, parseIfHeader } from "./if";
-import { decodeWebDavPath, toHref } from "../core/path";
+import { decodePath, toHref } from "../../path";
 import { isValidXml } from "../core/xml";
 import {
   multistatus,
@@ -50,17 +49,6 @@ const isLockedWithoutToken = async (
   return !submitted.some((token) =>
     active.some((lock) => lock.token === token),
   );
-};
-
-const parseRange = (header: string | undefined): ByteRange | undefined => {
-  if (!header) return;
-  const match = /^bytes=(\d+)-(\d*)$/.exec(header);
-  if (!match)
-    throw new FileSystemError("range-not-satisfiable", "Invalid Range header");
-  return {
-    start: Number(match[1]),
-    ...(match[2] ? { end: Number(match[2]) } : {}),
-  };
 };
 
 export const rfc4918 = new Hono<DavEnv>();
@@ -128,10 +116,18 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   if (!file) return c.text("Not Found", 404);
   if (file.kind !== "file") return c.text("Resource is a directory", 405);
   const options: ReadFileOptions = {};
-  try {
-    options.range = parseRange(c.req.header("range"));
-  } catch {
-    return c.body(null, 416);
+  const rangeHeader = c.req.header("range");
+  if (rangeHeader) {
+    const ranges = rangeParser(file.size, rangeHeader);
+    if (
+      ranges === -1 ||
+      ranges === -2 ||
+      ranges.type.toLowerCase() !== "bytes" ||
+      ranges.length !== 1
+    )
+      return c.body(null, 416);
+    const [range] = ranges;
+    options.range = { start: range.start, end: range.end };
   }
   const content = await resource.readFile(path, options);
   const headers = new Headers({
@@ -228,7 +224,7 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
     const url = new URL(destinationHeader, c.req.url);
     if (url.origin !== new URL(c.req.url).origin)
       return c.text("Cross-origin destinations are not supported", 502);
-    destination = decodeWebDavPath(url.pathname);
+    destination = decodePath(url.pathname);
   } catch {
     return c.text("Invalid Destination header", 400);
   }
