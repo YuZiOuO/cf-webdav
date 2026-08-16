@@ -10,11 +10,11 @@ import type {
   LockManager,
 } from "../interfaces/webdav/rfc4918";
 import type { SyncCollection } from "../interfaces/webdav/rfc6578";
+import { name } from "../filesystem/vfs/path";
 import type {
   FileSystemState,
   StoredProppatchInstruction,
-} from "../filesystem/state";
-import { name } from "../filesystem/path";
+} from "../filesystem/meta";
 import {
   appendDavElement,
   createDavProperty,
@@ -31,7 +31,7 @@ import {
   propertyKey,
   storedProperty,
 } from "./property";
-import { unwrapState } from "../filesystem/state";
+import { unwrapState } from "../filesystem/meta/helper";
 
 export class DavProperties implements DavPropertyService {
   constructor(

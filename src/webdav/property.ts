@@ -9,7 +9,7 @@ import {
   propertyName,
   serializeProperty,
 } from "./xml";
-import type { StoredProperty } from "../filesystem/state";
+import type { StoredProperty } from "../filesystem/meta";
 
 export const propertyKey = ({ namespaceURI, localName }: DavPropertyName) =>
   `${namespaceURI}\0${localName}`;

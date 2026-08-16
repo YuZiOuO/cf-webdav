@@ -6,8 +6,9 @@ import type {
   SyncResult,
   SyncToken,
 } from "../interfaces/webdav/rfc6578";
-import { toResource } from "../filesystem/object_store_file_system";
-import { unwrapState, type FileSystemState } from "../filesystem/state";
+import { toResource } from "../filesystem/vfs/resource";
+import { unwrapState } from "../filesystem/meta/helper";
+import type { FileSystemState } from "../filesystem/meta";
 
 export class DavSync implements SyncCollection {
   constructor(private readonly state: DurableObjectStub<FileSystemState>) {}

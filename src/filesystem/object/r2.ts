@@ -5,7 +5,7 @@ import type {
   ObjectKey,
   ObjectMetadata,
   ObjectStore,
-} from "../interfaces/object_store";
+} from "../../interfaces/object_store";
 
 const toMetadata = (object: R2Object): ObjectMetadata => ({
   etag: object.httpEtag as EntityTag,

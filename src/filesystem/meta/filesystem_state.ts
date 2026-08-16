@@ -1,107 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
-import { FileSystemError } from "./errors";
-import type { EntityTag, Preconditions } from "../interfaces/object_store";
-import { isDescendant, name, parent, remap } from "./path";
-
-const ROOT = "/";
-
-export interface StoredFile {
-  path: string;
-  id: string;
-  kind: "file";
-  etag: EntityTag;
-  createdAt: number;
-  lastModified: number;
-  size: number;
-  contentType?: string;
-  objectKey?: string;
-}
-
-export interface StoredDirectory {
-  path: string;
-  id: string;
-  kind: "directory";
-  etag: EntityTag;
-  createdAt: number;
-  lastModified: number;
-}
-
-export type StoredResource = StoredFile | StoredDirectory;
-
-export interface StoredProperty {
-  namespaceURI: string;
-  localName: string;
-  xml: string;
-}
-
-export type StoredProppatchInstruction =
-  | { kind: "set"; property: StoredProperty }
-  | {
-      kind: "remove";
-      name: Pick<StoredProperty, "namespaceURI" | "localName">;
-    };
-
-export interface StoredLock {
-  token: string;
-  root: string;
-  scope: "exclusive" | "shared";
-  depth: "0" | "infinity";
-  timeout?: number;
-  owner?: string;
-}
-
-export interface StoredLockRequest {
-  scope: StoredLock["scope"];
-  depth: StoredLock["depth"];
-  timeout?: number;
-  owner?: string;
-}
-
-export interface FileWrite {
-  id: string;
-  etag: EntityTag;
-  objectKey: string;
-  size: number;
-  contentType?: string;
-}
-
-export interface DirectoryCreate {
-  id: string;
-  etag: EntityTag;
-}
-
-export interface CopyPlan {
-  source: StoredResource[];
-  replaced: StoredResource[];
-}
-
-export interface CopyEntry {
-  sourcePath: string;
-  resource: StoredResource;
-}
-
-export type StateError =
-  | "not-found"
-  | "already-exists"
-  | "parent-not-found"
-  | "not-directory"
-  | "directory-not-empty"
-  | "precondition-failed"
-  | "locked"
-  | "invalid-destination"
-  | "invalid-sync-token";
-
-export type StateResult<T> =
-  { ok: true; value: T } | { ok: false; error: StateError };
-
-export type StoredSyncChange =
-  | { kind: "changed"; path: string; resource: StoredResource }
-  | { kind: "removed"; path: string };
-
-export interface StoredSyncResult {
-  changes: StoredSyncChange[];
-  token: string;
-}
+import type { EntityTag, Preconditions } from "../../interfaces/object_store";
+import { isDescendant, name, parent, remap } from "../vfs/path";
+import { matchesPreconditions, newEntityTag } from "./helper";
+import {
+  ROOT,
+  type CopyEntry,
+  type CopyPlan,
+  type DirectoryCreate,
+  type FileWrite,
+  type StoredDirectory,
+  type StoredFile,
+  type StoredLock,
+  type StoredLockRequest,
+  type StoredProperty,
+  type StoredProppatchInstruction,
+  type StoredResource,
+  type StoredSyncResult,
+  type StateResult,
+} from "./types";
 
 interface ResourceRow {
   path: string;
@@ -145,66 +61,11 @@ interface RevisionRow {
   [key: string]: SqlStorageValue;
 }
 
-export const newEntityTag = () => `"${crypto.randomUUID()}"` as EntityTag;
-
-export const matchesPreconditions = (
-  etag: EntityTag | undefined,
-  preconditions?: Preconditions,
-) => {
-  if (preconditions?.ifMatch) {
-    if (!etag) return false;
-    if (preconditions.ifMatch !== "*" && preconditions.ifMatch !== etag)
-      return false;
-  }
-  if (
-    preconditions?.ifNoneMatch &&
-    etag &&
-    (preconditions.ifNoneMatch === "*" || preconditions.ifNoneMatch === etag)
-  )
-    return false;
-  return true;
-};
-
-const stateError = (error: StateError): never => {
-  switch (error) {
-    case "not-found":
-      throw new FileSystemError("not-found", "Resource not found");
-    case "already-exists":
-      throw new FileSystemError("already-exists", "Resource already exists");
-    case "parent-not-found":
-      throw new FileSystemError(
-        "parent-not-found",
-        "Parent directory not found",
-      );
-    case "not-directory":
-      throw new FileSystemError("not-directory", "Parent is not a directory");
-    case "directory-not-empty":
-      throw new FileSystemError(
-        "directory-not-empty",
-        "Directory is not empty",
-      );
-    case "precondition-failed":
-      throw new FileSystemError("precondition-failed", "Precondition failed");
-    case "locked":
-      throw new FileSystemError("locked", "Resource is locked");
-    case "invalid-destination":
-      throw new FileSystemError("invalid-path", "Invalid destination");
-    case "invalid-sync-token":
-      throw new FileSystemError(
-        "precondition-failed",
-        "Invalid synchronization token",
-      );
-  }
-};
-
-export const unwrapState = <T>(result: StateResult<T>) =>
-  result.ok ? result.value : stateError(result.error);
-
 export class FileSystemState extends DurableObject {
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(() => {
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_resources (
           path TEXT PRIMARY KEY,
           parent_path TEXT,
@@ -219,7 +80,7 @@ export class FileSystemState extends DurableObject {
           content_type TEXT
         )`,
       );
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_properties (
           resource_path TEXT NOT NULL,
           namespace_uri TEXT NOT NULL,
@@ -228,7 +89,7 @@ export class FileSystemState extends DurableObject {
           PRIMARY KEY (resource_path, namespace_uri, local_name)
         )`,
       );
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_locks (
           token TEXT PRIMARY KEY,
           root TEXT NOT NULL,
@@ -238,24 +99,25 @@ export class FileSystemState extends DurableObject {
           owner_xml TEXT
         )`,
       );
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_changes (
           revision INTEGER NOT NULL,
           path TEXT NOT NULL,
           kind TEXT NOT NULL
         )`,
       );
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_metadata (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           revision INTEGER NOT NULL
         )`,
       );
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         "INSERT OR IGNORE INTO fs_metadata (id, revision) VALUES (1, 0)",
       );
+
       const now = Date.now();
-      this.ctx.storage.sql.exec(
+      ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO fs_resources
          (path, parent_path, name, id, kind, etag, created_at, last_modified)
          VALUES (?, NULL, '', 'root', 'directory', ?, ?, ?)`,
@@ -459,8 +321,16 @@ export class FileSystemState extends DurableObject {
     );
   }
 
-  readResource(path: string) {
-    return this.transaction(() => this.resource(path));
+  readResource(
+    path: string,
+    preconditions?: Preconditions,
+  ): StateResult<StoredResource | undefined> {
+    return this.transaction(() => {
+      const resource = this.resource(path);
+      if (resource && !matchesPreconditions(resource.etag, preconditions))
+        return { ok: false, error: "precondition-failed" };
+      return { ok: true, value: resource };
+    });
   }
 
   readDirectory(path: string): StateResult<StoredResource[]> {
@@ -506,7 +376,7 @@ export class FileSystemState extends DurableObject {
         path,
         id: file.id,
         kind: "file",
-        etag: file.etag,
+        etag: newEntityTag(),
         createdAt: existing?.createdAt ?? now,
         lastModified: now,
         size: file.size,
@@ -546,7 +416,7 @@ export class FileSystemState extends DurableObject {
 
   createDirectory(
     path: string,
-    directory: DirectoryCreate,
+    directory: DirectoryCreate = {},
   ): StateResult<StoredDirectory> {
     return this.transaction(() => {
       const created = this.insertDirectory(path, directory);
@@ -593,9 +463,9 @@ export class FileSystemState extends DurableObject {
     const now = Date.now();
     const resource: StoredDirectory = {
       path,
-      id: directory.id,
+      id: directory.id ?? crypto.randomUUID(),
       kind: "directory",
-      etag: directory.etag,
+      etag: directory.etag ?? newEntityTag(),
       createdAt: now,
       lastModified: now,
     };
@@ -662,7 +532,11 @@ export class FileSystemState extends DurableObject {
         return { ok: false, error: "invalid-destination" };
 
       this.removeMetadata(plan.value.replaced);
-      for (const { sourcePath, resource } of entries) {
+      for (const { sourcePath, resource: entryResource } of entries) {
+        const resource: StoredResource =
+          entryResource.kind === "file"
+            ? { ...entryResource, etag: entryResource.etag ?? newEntityTag() }
+            : { ...entryResource, etag: entryResource.etag ?? newEntityTag() };
         this.insertResource(resource);
         for (const property of this.ctx.storage.sql
           .exec<PropertyRow>(

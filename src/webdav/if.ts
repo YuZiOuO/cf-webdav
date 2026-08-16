@@ -5,8 +5,8 @@ import type {
   DavIfHeader,
   DavIfList,
 } from "../interfaces/webdav/rfc4918";
-import { FileSystemError } from "../filesystem/errors";
-import { toPath } from "../filesystem/path";
+import { FileSystemError } from "../filesystem";
+import { toPath } from "../filesystem/vfs/path";
 
 export interface IfMatchContext {
   etag?: EntityTag;

@@ -1,5 +1,5 @@
-import { FileSystemError } from "./errors";
-import type { Path } from "../interfaces/file_system";
+import { FileSystemError } from "../errors";
+import type { Path } from "../../interfaces/file_system";
 
 export const toPath = (value: string): Path => {
   if (value.includes("\0"))

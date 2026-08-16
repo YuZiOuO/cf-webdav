@@ -7,11 +7,8 @@ import type {
   LockToken,
 } from "../interfaces/webdav/rfc4918";
 import { parseProperty, serializeProperty } from "./xml";
-import {
-  unwrapState,
-  type FileSystemState,
-  type StoredLock,
-} from "../filesystem/state";
+import { unwrapState } from "../filesystem/meta/helper";
+import type { FileSystemState, StoredLock } from "../filesystem/meta";
 
 const toLock = (lock: StoredLock): Lock => ({
   token: lock.token as LockToken,

@@ -13,11 +13,13 @@ import {
   parseProppatch,
   parseSyncCollection,
 } from "./xml";
-import { FileSystemError } from "../filesystem/errors";
 import {
+  FileSystemError,
   ObjectStoreFileSystem,
-  emptyBody,
-} from "../filesystem/object_store_file_system";
+} from "../filesystem";
+import { R2ObjectStore } from "../filesystem/object";
+import { emptyBody } from "../filesystem/vfs/helper";
+import { href, toPath } from "../filesystem/vfs/path";
 import type {
   FileSystem,
   Path,
@@ -34,8 +36,6 @@ import type { SyncToken } from "../interfaces/webdav/rfc6578";
 import type { SyncCollection } from "../interfaces/webdav/rfc6578";
 import type { QuotaProvider } from "../interfaces/webdav/rfc4331";
 import type { ExtendedMkcol } from "../interfaces/webdav/rfc5689";
-import { R2ObjectStore } from "../object-store/r2";
-import { toPath, href } from "../filesystem/path";
 import { DavLocks } from "./locks";
 import { DavMkcol } from "./mkcol";
 import { DavProperties } from "./properties";

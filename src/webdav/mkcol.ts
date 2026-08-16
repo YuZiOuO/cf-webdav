@@ -4,12 +4,9 @@ import type {
   ExtendedMkcol,
   MkcolResponse,
 } from "../interfaces/webdav/rfc5689";
-import {
-  newEntityTag,
-  unwrapState,
-  type FileSystemState,
-} from "../filesystem/state";
-import { resourceId, toResource } from "../filesystem/object_store_file_system";
+import { toResource } from "../filesystem/vfs/resource";
+import { unwrapState } from "../filesystem/meta/helper";
+import type { FileSystemState } from "../filesystem/meta";
 import { DAV_NAMESPACE, propertyChildren, propertyName } from "./xml";
 import {
   protectedPropertyNames,
@@ -58,7 +55,7 @@ export class DavMkcol implements ExtendedMkcol {
       unwrapState(
         await this.state.createDirectoryWithProperties(
           path,
-          { id: resourceId(), etag: newEntityTag() },
+          {},
           deadProperties,
         ),
       ),
