@@ -4,10 +4,10 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { FileSystemError } from "../filesystem";
 import type { FileSystemErrorCode } from "../filesystem";
 import { ObjectStoreFileSystem } from "../filesystem";
-import { R2ObjectStore } from "../filesystem/object";
-import { toPath } from "../filesystem/vfs/path";
+import { R2ObjectStore } from "../filesystem";
 import { DavLocks } from "./rfc4918/locks";
 import { DavProperties } from "./core/properties";
+import { decodeWebDavPath } from "./core/path";
 import { DavQuotaProperties, FileSystemQuotaProvider } from "./rfc4331/quota";
 import { DavMkcol } from "./rfc5689/mkcol";
 import { DavSync, DavSyncProperties } from "./rfc6578/sync";
@@ -16,6 +16,8 @@ import type { DavEnv } from "./core/types";
 import { rfc4918 } from "./rfc4918/routes";
 import { rfc5689 } from "./rfc5689/routes";
 import { rfc6578 } from "./rfc6578/routes";
+
+export { WebDavState } from "./core/state";
 
 const app = new Hono<DavEnv>();
 
@@ -46,7 +48,7 @@ app.onError((error, c) => {
 
 app.use("*", async (c, next) => {
   try {
-    const path = toPath(decodeURIComponent(c.req.path));
+    const path = decodeWebDavPath(new URL(c.req.url).pathname);
     const webDavState = c.env.WebDavState.getByName("root");
     const filesystem = new ObjectStoreFileSystem(
       new R2ObjectStore(c.env.BUCKET),

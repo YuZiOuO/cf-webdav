@@ -1,9 +1,11 @@
-import type { Directory, FileSystem, Path } from "../../interfaces/file_system";
-import type { DavProperty } from "../../interfaces/webdav/rfc4918";
 import type {
+  DavProperty,
+  Directory,
   ExtendedMkcol,
+  FileSystem,
   MkcolResponse,
-} from "../../interfaces/webdav/rfc5689";
+  Path,
+} from "../../interfaces";
 import type { WebDavState } from "../core/state";
 import { DAV_NAMESPACE, propertyChildren, propertyName } from "../core/xml";
 import {

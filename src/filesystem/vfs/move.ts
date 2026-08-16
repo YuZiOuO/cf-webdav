@@ -1,10 +1,9 @@
-import { FileSystemError } from "../../errors";
-import type { MoveOptions, Path } from "../../../interfaces/file_system";
-import { isDescendant } from "../path";
-import { toResource } from "../resource";
-import { unwrapState } from "../../meta/helper";
-import { deleteReleasedObjects } from "../helper";
-import type { FileSystemDependencies } from "../helper";
+import { relative } from "node:path/posix";
+import { FileSystemError } from "../errors";
+import type { MoveOptions, Path } from "../../interfaces";
+import { unwrapState } from "../meta";
+import { deleteReleasedObjects, toResource } from "./helper";
+import type { FileSystemDependencies } from "./helper";
 
 export const move = async (
   deps: FileSystemDependencies,
@@ -12,10 +11,12 @@ export const move = async (
   destination: Path,
   options: MoveOptions,
 ) => {
+  const destinationIsDescendant = relative(source, destination);
   if (
     source === "/" ||
     destination === "/" ||
-    isDescendant(destination, source)
+    (destinationIsDescendant !== "" &&
+      !destinationIsDescendant.startsWith(".."))
   )
     throw new FileSystemError("invalid-path", "Invalid source or destination");
   const moved = unwrapState(

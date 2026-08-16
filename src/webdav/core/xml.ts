@@ -5,10 +5,7 @@ import {
   type Element as XmlElement,
 } from "@xmldom/xmldom";
 import { XMLValidator } from "fast-xml-parser";
-import type {
-  DavProperty,
-  DavPropertyName,
-} from "../../interfaces/webdav/rfc4918";
+import type { DavProperty, DavPropertyName } from "../../interfaces";
 
 export const DAV_NAMESPACE = "DAV:";
 

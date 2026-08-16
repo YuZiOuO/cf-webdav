@@ -1,18 +1,59 @@
 import { DurableObject } from "cloudflare:workers";
-import type { EntityTag, Preconditions } from "../../interfaces/object_store";
-import { isDescendant, name, parent, remap } from "../vfs/path";
+import { basename, dirname, join, relative } from "node:path/posix";
+import type { EntityTag, Preconditions } from "../../interfaces";
 import { matchesPreconditions, newEntityTag } from "./helper";
-import {
-  ROOT,
-  type CopyPlan,
-  type DirectoryCreate,
-  type FileWrite,
-  type StoredDirectory,
-  type StoredFile,
-  type StoredResource,
-  type StoredChangeResult,
-  type StateResult,
-} from "./types";
+import type { StateResult } from "./errors";
+
+export interface StoredFile {
+  path: string;
+  id: string;
+  kind: "file";
+  etag: EntityTag;
+  createdAt: number;
+  lastModified: number;
+  size: number;
+  contentType?: string;
+  objectKey?: string;
+}
+
+interface StoredDirectory {
+  path: string;
+  id: string;
+  kind: "directory";
+  etag: EntityTag;
+  createdAt: number;
+  lastModified: number;
+}
+
+export type StoredResource = StoredFile | StoredDirectory;
+
+interface FileWrite {
+  id: string;
+  objectKey: string;
+  size: number;
+  contentType?: string;
+}
+
+interface DirectoryCreate {
+  id?: string;
+  etag?: EntityTag;
+}
+
+interface CopyPlan {
+  source: StoredResource[];
+  replaced: StoredResource[];
+}
+
+type StoredSyncChange =
+  | { kind: "changed"; path: string; resource: StoredResource }
+  | { kind: "removed"; path: string };
+
+interface StoredChangeResult {
+  revision: number;
+  changes: StoredSyncChange[];
+}
+
+const ROOT = "/";
 
 interface ResourceRow {
   path: string;
@@ -166,8 +207,8 @@ export class FileSystemState extends DurableObject {
         object_key, size, content_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       resource.path,
-      resource.path === ROOT ? null : parent(resource.path),
-      resource.path === ROOT ? "" : name(resource.path),
+      resource.path === ROOT ? null : dirname(resource.path),
+      resource.path === ROOT ? "" : basename(resource.path),
       resource.id,
       resource.kind,
       resource.etag,
@@ -297,13 +338,16 @@ export class FileSystemState extends DurableObject {
   ): StateResult<CopyPlan> {
     const source = this.resource(sourcePath);
     if (!source) return { ok: false, error: "not-found" };
+    const destinationIsDescendant = relative(sourcePath, destinationPath);
     if (
       sourcePath === destinationPath ||
-      (source.kind === "directory" && isDescendant(destinationPath, sourcePath))
+      (source.kind === "directory" &&
+        destinationIsDescendant !== "" &&
+        !destinationIsDescendant.startsWith(".."))
     )
       return { ok: false, error: "invalid-destination" };
 
-    const parentResource = this.resource(parent(destinationPath));
+    const parentResource = this.resource(dirname(destinationPath));
     if (!parentResource) return { ok: false, error: "parent-not-found" };
     if (parentResource.kind !== "directory")
       return { ok: false, error: "not-directory" };
@@ -365,7 +409,7 @@ export class FileSystemState extends DurableObject {
     releasedObjectKeys: string[];
   }> {
     return this.transaction(() => {
-      const parentResource = this.resource(parent(path));
+      const parentResource = this.resource(dirname(path));
       if (!parentResource) return { ok: false, error: "parent-not-found" };
       if (parentResource.kind !== "directory")
         return { ok: false, error: "not-directory" };
@@ -440,7 +484,7 @@ export class FileSystemState extends DurableObject {
     directory: DirectoryCreate,
   ): StateResult<StoredDirectory> {
     if (path === ROOT) return { ok: false, error: "already-exists" };
-    const parentResource = this.resource(parent(path));
+    const parentResource = this.resource(dirname(path));
     if (!parentResource) return { ok: false, error: "parent-not-found" };
     if (parentResource.kind !== "directory")
       return { ok: false, error: "not-directory" };
@@ -476,7 +520,7 @@ export class FileSystemState extends DurableObject {
 
       const releasedObjectKeys = this.releaseObjectRefs(resources);
       this.removeMetadata(resources);
-      this.touch(parent(path), Date.now());
+      this.touch(dirname(path), Date.now());
       this.recordChanges(
         resources.map((resource) => ({
           path: resource.path,
@@ -509,9 +553,13 @@ export class FileSystemState extends DurableObject {
       this.removeMetadata(plan.value.replaced);
       const now = Date.now();
       for (const source of plan.value.source) {
+        const relativePath = relative(sourcePath, source.path);
         const resource: StoredResource = {
           ...source,
-          path: remap(sourcePath, destinationPath, source.path),
+          path:
+            relativePath === ""
+              ? destinationPath
+              : join(destinationPath, relativePath),
           id: crypto.randomUUID(),
           etag: newEntityTag(),
           createdAt: now,
@@ -521,16 +569,22 @@ export class FileSystemState extends DurableObject {
         if (resource.kind === "file" && resource.objectKey)
           this.retainObjectRef(resource.objectKey);
       }
-      this.touch(parent(destinationPath), now);
+      this.touch(dirname(destinationPath), now);
       this.recordChanges([
         ...plan.value.replaced.map((resource) => ({
           path: resource.path,
           kind: "removed" as const,
         })),
-        ...plan.value.source.map((resource) => ({
-          path: remap(sourcePath, destinationPath, resource.path),
-          kind: "changed" as const,
-        })),
+        ...plan.value.source.map((resource) => {
+          const relativePath = relative(sourcePath, resource.path);
+          return {
+            path:
+              relativePath === ""
+                ? destinationPath
+                : join(destinationPath, relativePath),
+            kind: "changed" as const,
+          };
+        }),
       ]);
       const resource = this.resource(destinationPath);
       return resource
@@ -553,22 +607,28 @@ export class FileSystemState extends DurableObject {
 
       const releasedObjectKeys = this.releaseObjectRefs(plan.value.replaced);
       this.removeMetadata(plan.value.replaced);
-      const moved = plan.value.source.map((resource) => ({
-        previousPath: resource.path,
-        nextPath: remap(sourcePath, destinationPath, resource.path),
-      }));
+      const moved = plan.value.source.map((resource) => {
+        const relativePath = relative(sourcePath, resource.path);
+        return {
+          previousPath: resource.path,
+          nextPath:
+            relativePath === ""
+              ? destinationPath
+              : join(destinationPath, relativePath),
+        };
+      });
       for (const { previousPath, nextPath } of moved) {
         this.ctx.storage.sql.exec(
           "UPDATE fs_resources SET path = ?, parent_path = ?, name = ? WHERE path = ?",
           nextPath,
-          parent(nextPath),
-          name(nextPath),
+          dirname(nextPath),
+          basename(nextPath),
           previousPath,
         );
       }
       const now = Date.now();
-      this.touch(parent(sourcePath), now);
-      this.touch(parent(destinationPath), now);
+      this.touch(dirname(sourcePath), now);
+      this.touch(dirname(destinationPath), now);
       this.recordChanges([
         ...plan.value.replaced.map((resource) => ({
           path: resource.path,
@@ -623,8 +683,11 @@ export class FileSystemState extends DurableObject {
         .toArray()) {
         const inScope =
           level === "1"
-            ? parent(change.path) === collectionPath
-            : isDescendant(change.path, collectionPath);
+            ? dirname(change.path) === collectionPath
+            : (() => {
+                const relativePath = relative(collectionPath, change.path);
+                return relativePath !== "" && !relativePath.startsWith("..");
+              })();
         if (inScope) changes.set(change.path, change);
       }
       return {

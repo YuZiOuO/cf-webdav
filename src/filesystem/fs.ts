@@ -5,21 +5,21 @@ import type {
   FileData,
   FileSystem,
   MoveOptions,
+  ObjectStore,
   Path,
   ReadFileOptions,
   RemoveOptions,
   StorageQuota,
   StorageQuotaProvider,
   WriteFileOptions,
-} from "../interfaces/file_system";
-import type { ObjectStore } from "../interfaces/object_store";
-import { copy } from "./vfs/operations/copy";
-import { move } from "./vfs/operations/move";
-import { readFile, readdir, stat } from "./vfs/operations/read";
-import { remove } from "./vfs/operations/remove";
-import { mkdir, writeFile } from "./vfs/operations/write";
+} from "../interfaces";
+import { copy } from "./vfs/copy";
+import { move } from "./vfs/move";
+import { readFile, readdir, stat } from "./vfs/read";
+import { remove } from "./vfs/remove";
+import { mkdir, writeFile } from "./vfs/write";
 import type { FileSystemState } from "./meta";
-import { toResource } from "./vfs/resource";
+import { toResource } from "./vfs/helper";
 
 export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
   private readonly objects: ObjectStore;
@@ -81,10 +81,10 @@ export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
         change.kind === "changed"
           ? {
               kind: "changed" as const,
-              path: change.path as Path,
+              path: change.path,
               resource: toResource(change.resource),
             }
-          : { kind: "removed" as const, path: change.path as Path },
+          : { kind: "removed" as const, path: change.path },
       ),
     };
   }

@@ -1,6 +1,6 @@
-import type { EntityTag, Preconditions } from "../../interfaces/object_store";
+import type { EntityTag, Preconditions } from "../../interfaces";
 import { FileSystemError } from "../errors";
-import type { StateResult } from "./types";
+import type { StateResult } from "./errors";
 
 // Entity tags and HTTP precondition checks.
 export const newEntityTag = () => `"${crypto.randomUUID()}"` as EntityTag;

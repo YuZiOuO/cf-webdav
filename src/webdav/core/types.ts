@@ -1,14 +1,12 @@
 import type {
-  Path,
-  FileSystem,
-  StorageQuotaProvider,
-} from "../../interfaces/file_system";
-import type {
   DavPropertyService,
+  ExtendedMkcol,
+  FileSystem,
   LockManager,
-} from "../../interfaces/webdav/rfc4918";
-import type { ExtendedMkcol } from "../../interfaces/webdav/rfc5689";
-import type { SyncCollection } from "../../interfaces/webdav/rfc6578";
+  Path,
+  StorageQuotaProvider,
+  SyncCollection,
+} from "../../interfaces";
 
 export type DavEnv = {
   Bindings: CloudflareBindings;

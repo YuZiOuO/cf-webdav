@@ -1,17 +1,17 @@
-import { FileSystemError } from "../../errors";
+import { basename } from "node:path/posix";
+import { FileSystemError } from "../errors";
 import type {
+  ByteRange,
   DirectoryEntry,
   File,
   FileContent,
+  ObjectKey,
   Path,
   ReadFileOptions,
-} from "../../../interfaces/file_system";
-import type { ByteRange, ObjectKey } from "../../../interfaces/object_store";
-import { name } from "../path";
-import { emptyBody } from "../helper";
-import { toResource } from "../resource";
-import { unwrapState } from "../../meta/helper";
-import type { FileSystemDependencies } from "../helper";
+} from "../../interfaces";
+import { emptyBody, toResource } from "./helper";
+import { unwrapState } from "../meta";
+import type { FileSystemDependencies } from "./helper";
 
 export const stat = async (deps: FileSystemDependencies, path: Path) => {
   const stored = unwrapState(await deps.state.readResource(path));
@@ -65,6 +65,6 @@ export const readdir = async function* (
   path: Path,
 ): AsyncIterable<DirectoryEntry> {
   for (const stored of unwrapState(await deps.state.readDirectory(path))) {
-    yield { name: name(stored.path), resource: toResource(stored) };
+    yield { name: basename(stored.path), resource: toResource(stored) };
   }
 };

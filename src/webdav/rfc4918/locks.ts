@@ -1,10 +1,10 @@
-import type { Path } from "../../interfaces/file_system";
 import type {
   Lock,
   LockManager,
   LockRequest,
   LockToken,
-} from "../../interfaces/webdav/rfc4918";
+  Path,
+} from "../../interfaces";
 import { parseProperty, serializeProperty } from "../core/xml";
 import type { WebDavLock, WebDavState } from "../core/state";
 
@@ -17,7 +17,7 @@ const unwrapState = <T>(
 
 const toLock = (lock: WebDavLock): Lock => ({
   token: lock.token as LockToken,
-  root: lock.root as Path,
+  root: lock.root,
   scope: lock.scope,
   depth: lock.depth,
   ...(lock.timeout === undefined ? {} : { timeout: lock.timeout }),

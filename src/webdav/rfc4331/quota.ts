@@ -1,6 +1,10 @@
-import type { Path, Resource } from "../../interfaces/file_system";
-import type { StorageQuotaProvider } from "../../interfaces/file_system";
-import type { Quota, QuotaProvider } from "../../interfaces/webdav/rfc4331";
+import type {
+  Path,
+  Quota,
+  QuotaProvider,
+  Resource,
+  StorageQuotaProvider,
+} from "../../interfaces";
 import type { DavPropertyExtension } from "../core/properties";
 import { DAV_NAMESPACE, createDavProperty } from "../core/xml";
 

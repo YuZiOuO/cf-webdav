@@ -1,12 +1,12 @@
-import type { Path } from "../../interfaces/file_system";
-import type { EntityTag } from "../../interfaces/object_store";
 import type {
   DavIfCondition,
   DavIfHeader,
   DavIfList,
-} from "../../interfaces/webdav/rfc4918";
+  EntityTag,
+  Path,
+} from "../../interfaces";
 import { FileSystemError } from "../../filesystem";
-import { toPath } from "../../filesystem/vfs/path";
+import { decodeWebDavPath } from "../core/path";
 
 interface IfMatchContext {
   etag?: EntityTag;
@@ -93,7 +93,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     const tag = parseTag();
     try {
       const pathname = tag.startsWith("/") ? tag : new URL(tag).pathname;
-      return toPath(decodeURIComponent(pathname));
+      return decodeWebDavPath(pathname);
     } catch {
       throw new FileSystemError("invalid-if", "Invalid If header");
     }

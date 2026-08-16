@@ -204,18 +204,18 @@ export function proppatch(
 }
 
 // DAV XML parsing
-export interface DavPropStat {
+interface DavPropStat {
   properties: readonly Element[];
   status: number;
 }
 
-export interface DavResponse {
+interface DavResponse {
   href: string;
   propstats: readonly DavPropStat[];
   status: number | undefined;
 }
 
-export interface DavMultiStatus {
+interface DavMultiStatus {
   responses: readonly DavResponse[];
   syncToken: string | undefined;
 }

@@ -1,3 +1,4 @@
-export { FileSystemState } from "./filesystem_state";
+export { FileSystemState } from "./state";
+export { unwrapState } from "./helper";
 
-export type * from "./types";
+export type { StoredFile, StoredResource } from "./state";

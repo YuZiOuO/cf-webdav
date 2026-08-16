@@ -1,7 +1,7 @@
-import type { SyncToken } from "../../interfaces/webdav/rfc6578";
+import type { SyncToken } from "../../interfaces";
 import type { DavEnv } from "../core/types";
 import { Hono } from "hono";
-import { href } from "../../filesystem/vfs/path";
+import { toHref } from "../core/path";
 import { isValidXml } from "../core/xml";
 import { parseSyncCollection, syncMultistatus } from "./xml";
 
@@ -25,14 +25,18 @@ rfc6578.on("REPORT", "*", async (c) => {
     result.changes.map(async (change) =>
       change.kind === "changed"
         ? {
-            href: href(change.path, change.resource.kind === "directory"),
+            href: toHref(change.path, change.resource.kind === "directory"),
             propstats: await dav.properties.propfind(
               change.path,
               change.resource,
               { kind: "prop", names: request.properties },
             ),
           }
-        : { href: href(change.path, false), propstats: [], status: 404 },
+        : {
+            href: toHref(change.path),
+            propstats: [],
+            status: 404,
+          },
     ),
   );
   return c.body(syncMultistatus(responses, result.syncToken), 207, {

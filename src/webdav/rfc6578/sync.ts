@@ -1,12 +1,14 @@
-import type { FileSystem, Path, Resource } from "../../interfaces/file_system";
 import type {
+  FileSystem,
+  Path,
+  Resource,
   SyncChange,
   SyncCollection,
   SyncRequest,
   SyncResult,
   SyncToken,
-} from "../../interfaces/webdav/rfc6578";
-import type { Path as DavPath } from "../../interfaces/file_system";
+} from "../../interfaces";
+import { join } from "node:path/posix";
 import type { DavPropertyExtension } from "../core/properties";
 import {
   appendDavElement,
@@ -56,9 +58,7 @@ export class DavSync implements SyncCollection {
       changes.push({ kind: "changed", path, resource });
       if (resource.kind === "directory" && includeChildren) {
         for await (const entry of this.filesystem.readdir(path)) {
-          const child = (
-            path === "/" ? `/${entry.name}` : `${path}/${entry.name}`
-          ) as Path;
+          const child = join(path, entry.name);
           await visit(child, level === "infinite");
         }
       }
@@ -103,7 +103,7 @@ export class DavSync implements SyncCollection {
 export class DavSyncProperties implements DavPropertyExtension {
   constructor(private readonly sync: SyncCollection) {}
 
-  async liveProperties(path: DavPath, resource: Resource) {
+  async liveProperties(path: Path, resource: Resource) {
     if (resource.kind !== "directory") return [];
     const properties = [];
     const token = await this.sync.getSyncToken(path);

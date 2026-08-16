@@ -1,9 +1,8 @@
-import { FileSystemError } from "../../errors";
-import type { CopyOptions, Path } from "../../../interfaces/file_system";
-import { toResource } from "../resource";
-import { unwrapState } from "../../meta/helper";
-import { deleteReleasedObjects } from "../helper";
-import type { FileSystemDependencies } from "../helper";
+import { FileSystemError } from "../errors";
+import type { CopyOptions, Path } from "../../interfaces";
+import { unwrapState } from "../meta";
+import { deleteReleasedObjects, toResource } from "./helper";
+import type { FileSystemDependencies } from "./helper";
 
 export const copy = async (
   deps: FileSystemDependencies,

@@ -1,16 +1,17 @@
+import { dirname, join } from "node:path/posix";
 import { FileSystemError } from "../../filesystem";
-import { emptyBody } from "../../filesystem/vfs/helper";
-import { href, parent, toPath } from "../../filesystem/vfs/path";
-import type { ByteRange } from "../../interfaces/object_store";
-import type { Path, ReadFileOptions } from "../../interfaces/file_system";
 import type {
+  ByteRange,
   DavPropfindRequest,
   LockManager,
   LockToken,
-} from "../../interfaces/webdav/rfc4918";
+  Path,
+  ReadFileOptions,
+} from "../../interfaces";
 import type { DavEnv } from "../core/types";
 import { Hono } from "hono";
 import { ifHeaderMatches, parseIfHeader } from "./if";
+import { decodeWebDavPath, toHref } from "../core/path";
 import { isValidXml } from "../core/xml";
 import {
   multistatus,
@@ -24,6 +25,13 @@ const XML = { "Content-Type": "application/xml; charset=utf-8" };
 const ALLOW =
   "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT";
 const DAV = "1, 2, extended-mkcol";
+
+const emptyBody = () =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.close();
+    },
+  });
 
 const isLockedWithoutToken = async (
   locks: LockManager,
@@ -82,15 +90,13 @@ rfc4918.on("PROPFIND", "*", async (c) => {
   if (depth === "1" && target.kind === "directory") {
     for await (const entry of resource.readdir(path))
       resources.push({
-        path: (path === "/"
-          ? `/${entry.name}`
-          : `${path}/${entry.name}`) as Path,
+        path: join(path, entry.name),
         resource: entry.resource,
       });
   }
   const responses = await Promise.all(
     resources.map(async (item) => ({
-      href: href(item.path, item.resource.kind === "directory"),
+      href: toHref(item.path, item.resource.kind === "directory"),
       propstats: await c
         .get("dav")
         .properties.propfind(item.path, item.resource, request),
@@ -111,11 +117,8 @@ rfc4918.on("PROPPATCH", "*", async (c) => {
   const propstats = await c
     .get("dav")
     .properties.proppatch(path, target, parseProppatch(body));
-  return c.body(
-    multistatus([{ href: href(path, target.kind === "directory"), propstats }]),
-    207,
-    XML,
-  );
+  const responseHref = toHref(path, target.kind === "directory");
+  return c.body(multistatus([{ href: responseHref, propstats }]), 207, XML);
 });
 
 rfc4918.on(["GET", "HEAD"], "*", async (c) => {
@@ -225,7 +228,7 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
     const url = new URL(destinationHeader, c.req.url);
     if (url.origin !== new URL(c.req.url).origin)
       return c.text("Cross-origin destinations are not supported", 502);
-    destination = toPath(decodeURIComponent(url.pathname));
+    destination = decodeWebDavPath(url.pathname);
   } catch {
     return c.text("Invalid Destination header", 400);
   }
@@ -291,7 +294,7 @@ rfc4918.on("LOCK", "*", async (c) => {
   if (
     !token &&
     !existing &&
-    (await dav.tree.stat(parent(path) as Path))?.kind !== "directory"
+    (await dav.tree.stat(dirname(path)))?.kind !== "directory"
   )
     return c.text("Parent directory not found", 409);
   const lock = token

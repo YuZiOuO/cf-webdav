@@ -1,12 +1,10 @@
 import type { ByteRange, EntityTag, Preconditions } from "./object_store";
+import type { PathLike } from "node:fs";
 
-declare const pathType: unique symbol;
 declare const resourceIdType: unique symbol;
 
 /** A canonical, decoded absolute filesystem path. */
-export type Path = string & {
-  readonly [pathType]: "Path";
-};
+export type Path = Extract<PathLike, string>;
 
 /** A stable filesystem resource identity. */
 export type ResourceId = string & {

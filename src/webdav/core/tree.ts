@@ -7,7 +7,7 @@ import type {
   ReadFileOptions,
   RemoveOptions,
   WriteFileOptions,
-} from "../../interfaces/file_system";
+} from "../../interfaces";
 import type { WebDavState } from "./state";
 
 /** WebDAV's resource tree and the composition point for its metadata. */

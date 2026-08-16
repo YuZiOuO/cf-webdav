@@ -1,8 +1,8 @@
-import { FileSystemError } from "../../errors";
-import type { Path, RemoveOptions } from "../../../interfaces/file_system";
-import { unwrapState } from "../../meta/helper";
-import { deleteReleasedObjects } from "../helper";
-import type { FileSystemDependencies } from "../helper";
+import { FileSystemError } from "../errors";
+import type { Path, RemoveOptions } from "../../interfaces";
+import { unwrapState } from "../meta";
+import { deleteReleasedObjects } from "./helper";
+import type { FileSystemDependencies } from "./helper";
 
 export const remove = async (
   deps: FileSystemDependencies,

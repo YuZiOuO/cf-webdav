@@ -1,4 +1,4 @@
-import { FileSystemError } from "../../errors";
+import { FileSystemError } from "../errors";
 import type {
   Directory,
   File,
@@ -6,12 +6,16 @@ import type {
   Path,
   ResourceId,
   WriteFileOptions,
-} from "../../../interfaces/file_system";
-import { deleteReleasedObjects, objectKey } from "../helper";
-import { resourceId, toResource } from "../resource";
-import { unwrapState } from "../../meta/helper";
-import type { StoredFile } from "../../meta";
-import type { FileSystemDependencies } from "../helper";
+} from "../../interfaces";
+import {
+  deleteReleasedObjects,
+  objectKey,
+  resourceId,
+  toResource,
+} from "./helper";
+import { unwrapState } from "../meta";
+import type { StoredFile } from "../meta";
+import type { FileSystemDependencies } from "./helper";
 
 export const writeFile = async (
   deps: FileSystemDependencies,

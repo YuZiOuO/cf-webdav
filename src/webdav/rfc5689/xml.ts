@@ -1,11 +1,10 @@
-import type { DavProperty } from "../../interfaces/webdav/rfc4918";
+import type { DavProperty, DavPropStat } from "../../interfaces";
 import { DAV_NAMESPACE, elementChildren } from "../core/xml";
 import {
   DOMParser,
   XMLSerializer,
   type Element as XmlElement,
 } from "@xmldom/xmldom";
-import type { DavPropStat } from "../../interfaces/webdav/rfc4918";
 
 export const parseMkcol = (xml: string): DavProperty[] => {
   const root = new DOMParser().parseFromString(

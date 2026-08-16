@@ -1,4 +1,4 @@
-import type { Path, Resource } from "../../interfaces/file_system";
+import { basename } from "node:path/posix";
 import type {
   DavPropfindRequest,
   DavProperty,
@@ -8,8 +8,9 @@ import type {
   DavProppatchInstruction,
   LockManager,
   LockScope,
-} from "../../interfaces/webdav/rfc4918";
-import { name } from "../../filesystem/vfs/path";
+  Path,
+  Resource,
+} from "../../interfaces";
 import type { WebDavState } from "./state";
 import {
   appendDavElement,
@@ -59,12 +60,12 @@ export const storedProperty = (property: DavProperty) => {
   return { namespaceURI, localName, xml: serializeProperty(property) };
 };
 
-export const instructionProperty = (instruction: DavProppatchInstruction) =>
+const instructionProperty = (instruction: DavProppatchInstruction) =>
   instruction.kind === "set"
     ? instruction.property
     : { element: createPropertyElement(instruction.name) };
 
-export const isProtectedInstruction = (instruction: DavProppatchInstruction) =>
+const isProtectedInstruction = (instruction: DavProppatchInstruction) =>
   protectedPropertyNames.has(
     propertyKey(
       instruction.kind === "set"
@@ -95,7 +96,7 @@ export class DavProperties implements DavPropertyService {
     add("displayname", {
       element: createDavProperty(
         "displayname",
-        path === "/" ? "/" : name(path),
+        path === "/" ? "/" : basename(path),
       ),
     });
     add("getlastmodified", {

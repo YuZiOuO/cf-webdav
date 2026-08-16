@@ -1,8 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { isDescendant } from "../../filesystem/vfs/path";
-import type { LockDepth, LockScope } from "../../interfaces/webdav/rfc4918";
+import { join, relative } from "node:path/posix";
+import type { LockDepth, LockScope } from "../../interfaces";
 
-export interface WebDavProperty {
+interface WebDavProperty {
   namespaceURI: string;
   localName: string;
   xml: string;
@@ -24,14 +24,14 @@ interface WebDavLockRequest {
   owner?: string;
 }
 
-export type WebDavStateError =
+type WebDavStateError =
   | "not-found"
   | "parent-not-found"
   | "not-directory"
   | "locked"
   | "precondition-failed";
 
-export type WebDavStateResult<T> =
+type WebDavStateResult<T> =
   { ok: true; value: T } | { ok: false; error: WebDavStateError };
 
 interface LockRow {
@@ -146,10 +146,9 @@ export class WebDavState extends DurableObject {
         )
         .toArray();
       for (const row of rows) {
+        const relativePath = relative(source, row.resource_path);
         const path =
-          row.resource_path === source
-            ? destination
-            : `${destination}${row.resource_path.slice(source.length)}`;
+          relativePath === "" ? destination : join(destination, relativePath);
         this.ctx.storage.sql.exec(
           `INSERT OR REPLACE INTO dav_properties
            (resource_path, namespace_uri, local_name, value_xml) VALUES (?, ?, ?, ?)`,
@@ -174,10 +173,9 @@ export class WebDavState extends DurableObject {
         )
         .toArray();
       for (const row of rows) {
+        const relativePath = relative(source, row.resource_path);
         const path =
-          row.resource_path === source
-            ? destination
-            : `${destination}${row.resource_path.slice(source.length)}`;
+          relativePath === "" ? destination : join(destination, relativePath);
         this.ctx.storage.sql.exec(
           "UPDATE dav_properties SET resource_path = ? WHERE resource_path = ? AND namespace_uri = ? AND local_name = ?",
           path,
@@ -221,11 +219,15 @@ export class WebDavState extends DurableObject {
   getLocks(path: string) {
     return this.transaction(() =>
       this.activeLocks(Date.now())
-        .filter(
-          (lock) =>
+        .filter((lock) => {
+          const descendant = relative(lock.root, path);
+          return (
             lock.root === path ||
-            (lock.depth === "infinity" && isDescendant(path, lock.root)),
-        )
+            (lock.depth === "infinity" &&
+              descendant !== "" &&
+              !descendant.startsWith(".."))
+          );
+        })
         .map((lock) => ({
           token: lock.token,
           root: lock.root,
@@ -250,13 +252,20 @@ export class WebDavState extends DurableObject {
   ): WebDavStateResult<WebDavLock> {
     return this.transaction(() => {
       const now = Date.now();
-      const conflict = this.activeLocks(now).some(
-        (lock) =>
+      const conflict = this.activeLocks(now).some((lock) => {
+        const descendant = relative(lock.root, path);
+        const ancestor = relative(path, lock.root);
+        return (
           (lock.root === path ||
-            (lock.depth === "infinity" && isDescendant(path, lock.root)) ||
-            (request.depth === "infinity" && isDescendant(lock.root, path))) &&
-          (lock.scope === "exclusive" || request.scope === "exclusive"),
-      );
+            (lock.depth === "infinity" &&
+              descendant !== "" &&
+              !descendant.startsWith("..")) ||
+            (request.depth === "infinity" &&
+              ancestor !== "" &&
+              !ancestor.startsWith(".."))) &&
+          (lock.scope === "exclusive" || request.scope === "exclusive")
+        );
+      });
       if (conflict) return { ok: false, error: "locked" };
       const lock = {
         token: `opaquelocktoken:${crypto.randomUUID()}`,
@@ -288,13 +297,16 @@ export class WebDavState extends DurableObject {
     timeout?: number,
   ): WebDavStateResult<WebDavLock> {
     return this.transaction(() => {
-      const lock = this.activeLocks(Date.now()).find(
-        (candidate) =>
+      const lock = this.activeLocks(Date.now()).find((candidate) => {
+        const descendant = relative(candidate.root, path);
+        return (
           candidate.token === token &&
           (candidate.root === path ||
             (candidate.depth === "infinity" &&
-              isDescendant(path, candidate.root))),
-      );
+              descendant !== "" &&
+              !descendant.startsWith("..")))
+        );
+      });
       if (!lock) return { ok: false, error: "locked" };
       this.ctx.storage.sql.exec(
         "UPDATE dav_locks SET expires_at = ? WHERE token = ?",
@@ -317,13 +329,16 @@ export class WebDavState extends DurableObject {
 
   unlock(path: string, token: string): WebDavStateResult<void> {
     return this.transaction(() => {
-      const lock = this.activeLocks(Date.now()).find(
-        (candidate) =>
+      const lock = this.activeLocks(Date.now()).find((candidate) => {
+        const descendant = relative(candidate.root, path);
+        return (
           candidate.token === token &&
           (candidate.root === path ||
             (candidate.depth === "infinity" &&
-              isDescendant(path, candidate.root))),
-      );
+              descendant !== "" &&
+              !descendant.startsWith("..")))
+        );
+      });
       if (!lock) return { ok: false, error: "precondition-failed" };
       this.ctx.storage.sql.exec("DELETE FROM dav_locks WHERE token = ?", token);
       return { ok: true, value: undefined };

@@ -10,7 +10,7 @@ import type {
   DavPropStat,
   Lock,
   LockScope,
-} from "../../interfaces/webdav/rfc4918";
+} from "../../interfaces";
 import {
   appendDavElement,
   DAV_NAMESPACE,
