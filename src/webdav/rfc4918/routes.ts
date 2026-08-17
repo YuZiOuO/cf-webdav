@@ -135,6 +135,7 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   if (!etag) return c.text("Resource not found", 404);
   const headers = new Headers({
     "Accept-Ranges": "bytes",
+    "Cloudflare-CDN-Cache-Control": "public, max-age=60, must-revalidate",
     ETag: etag,
     "Last-Modified": content.file.lastModified.toUTCString(),
   });
