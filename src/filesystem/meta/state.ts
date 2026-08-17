@@ -99,17 +99,14 @@ export class FileSystemState extends DurableObject {
         )`,
       );
       ctx.storage.sql.exec(
+        `CREATE INDEX IF NOT EXISTS fs_resources_by_parent_name
+         ON fs_resources (parent_path, name)`,
+      );
+      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_object_refs (
           object_key TEXT PRIMARY KEY,
           ref_count INTEGER NOT NULL CHECK (ref_count > 0)
         )`,
-      );
-      ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO fs_object_refs (object_key, ref_count)
-         SELECT object_key, COUNT(*)
-         FROM fs_resources
-         WHERE kind = 'file' AND object_key IS NOT NULL
-         GROUP BY object_key`,
       );
       ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_changes (
@@ -117,6 +114,10 @@ export class FileSystemState extends DurableObject {
           path TEXT NOT NULL,
           kind TEXT NOT NULL
         )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE INDEX IF NOT EXISTS fs_changes_by_revision
+         ON fs_changes (revision)`,
       );
       ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_metadata (

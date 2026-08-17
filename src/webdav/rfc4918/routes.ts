@@ -5,9 +5,14 @@ import type { DavEnv } from "../types";
 import { Hono } from "hono";
 import rangeParser from "range-parser";
 import { ifHeaderMatches, parseIfHeader } from "./http";
+import { propertyKey } from "./properties";
 import { decodePath, toHref } from "../../path";
 import { isValidXml } from "../core/xml";
-import { quotaLiveProperties } from "../rfc4331/quota";
+import {
+  quotaLiveProperties,
+  quotaProtectedPropertyNames,
+} from "../rfc4331/quota";
+import { syncProtectedPropertyNames } from "../rfc6578/sync";
 import {
   multistatus,
   parseLockInfo,
@@ -63,33 +68,44 @@ rfc4918.on("PROPFIND", "*", async (c) => {
   const request: DavPropfindRequest = body
     ? parsePropfind(body)
     : { kind: "allprop" };
+  const requestedPropertyKeys =
+    request.kind === "prop"
+      ? new Set(request.names.map(propertyKey))
+      : undefined;
+  const includeQuota =
+    request.kind !== "allprop" &&
+    (requestedPropertyKeys === undefined ||
+      quotaProtectedPropertyNames.some((name) =>
+        requestedPropertyKeys.has(propertyKey(name)),
+      ));
+  const includeSync =
+    requestedPropertyKeys === undefined ||
+    syncProtectedPropertyNames.some((name) =>
+      requestedPropertyKeys.has(propertyKey(name)),
+    );
   const resources = [{ resource, info }];
   if (depth === "1" && info.kind === "collection") {
     for await (const child of resource.children()) {
-      const childInfo = await child.stat();
-      if (childInfo) resources.push({ resource: child, info: childInfo });
+      resources.push(child);
     }
   }
   const dav = c.get("dav");
-  const include = request.kind !== "allprop";
   const responses = await Promise.all(
-    resources.map(async (item) => ({
-      href: toHref(item.resource.path, item.info.kind === "collection"),
-      propstats: await dav.properties.propfind(
-        item.resource,
-        item.info,
-        request,
-        [
-          ...(await quotaLiveProperties(
-            dav.quota,
-            item.resource,
-            item.info,
-            include,
-          )),
-          ...(await dav.sync.liveProperties(item.resource, item.info)),
-        ],
-      ),
-    })),
+    resources.map(async (item) => {
+      const [quota, sync] = await Promise.all([
+        quotaLiveProperties(dav.quota, item.resource, item.info, includeQuota),
+        includeSync ? dav.sync.liveProperties(item.resource, item.info) : [],
+      ]);
+      return {
+        href: toHref(item.resource.path, item.info.kind === "collection"),
+        propstats: await dav.properties.propfind(
+          item.resource,
+          item.info,
+          request,
+          [...quota, ...sync],
+        ),
+      };
+    }),
   );
   return c.body(multistatus(responses), 207, XML);
 });
@@ -132,7 +148,6 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   }
   const content = await resource.readFile(range);
   const etag = await resource.etag();
-  if (!etag) return c.text("Resource not found", 404);
   const headers = new Headers({
     "Accept-Ranges": "bytes",
     "Cloudflare-CDN-Cache-Control": "public, max-age=60, must-revalidate",
@@ -200,7 +215,7 @@ rfc4918.put("*", async (c) => {
       return c.body(null, 412);
   } else if (locks.length) return c.text("Resource is locked", 423);
   const contentType = c.req.header("content-type");
-  await resource.writeFile({
+  const etag = await resource.writeFile({
     body:
       c.req.raw.body ??
       new ReadableStream<Uint8Array>({
@@ -211,9 +226,8 @@ rfc4918.put("*", async (c) => {
     contentLength: Number(c.req.header("content-length") ?? 0),
     ...(contentType ? { contentType } : {}),
   });
-  const etag = await resource.etag();
   return c.body(null, existing ? 204 : 201, {
-    ...(etag ? { ETag: etag } : {}),
+    ETag: etag,
     ...(existing ? {} : { Location: c.req.url }),
   });
 });
@@ -225,7 +239,6 @@ rfc4918.delete("*", async (c) => {
   if (await isLockedWithoutToken(dav.locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
   const resource = dav.resource(path);
-  if (!(await resource.stat())) return c.text("Not Found", 404);
   await resource.delete();
   return c.body(null, 204);
 });

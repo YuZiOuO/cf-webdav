@@ -45,7 +45,7 @@ rfc5689.on("MKCOL", "*", async (c) => {
           "Content-Type": "application/xml; charset=utf-8",
         },
       );
-    await resource.createCollection();
+    const etag = await resource.createCollection();
     const deadProperties = properties.filter(
       (property) =>
         !c
@@ -53,8 +53,6 @@ rfc5689.on("MKCOL", "*", async (c) => {
           .properties.isProtectedName(propertyName(property.element)),
     );
     if (deadProperties.length) {
-      const info = await resource.stat();
-      if (!info) return c.text("Resource not found", 404);
       await c.get("dav").properties.proppatch(
         resource,
         deadProperties.map((property) => ({
@@ -63,16 +61,14 @@ rfc5689.on("MKCOL", "*", async (c) => {
         })),
       );
     }
-    const etag = await resource.etag();
     return c.body(null, 201, {
       Location: c.req.url,
-      ...(etag ? { ETag: etag } : {}),
+      ETag: etag,
     });
   }
-  await resource.createCollection();
-  const etag = await resource.etag();
+  const etag = await resource.createCollection();
   return c.body(null, 201, {
     Location: c.req.url,
-    ...(etag ? { ETag: etag } : {}),
+    ETag: etag,
   });
 });

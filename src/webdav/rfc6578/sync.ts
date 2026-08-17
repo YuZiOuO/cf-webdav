@@ -77,9 +77,11 @@ export class DavSync {
     let nextRevision: number;
     if (request.syncToken === undefined) {
       const currentChanges: SyncChange[] = [];
-      const visit = async (resource: DavResource, includeChildren: boolean) => {
-        const info = await resource.stat();
-        if (!info) return;
+      const visit = async (
+        resource: DavResource,
+        info: DavResourceInfo,
+        includeChildren: boolean,
+      ) => {
         currentChanges.push({
           kind: "changed",
           path: resource.path,
@@ -87,11 +89,17 @@ export class DavSync {
         });
         if (info.kind === "collection" && includeChildren) {
           for await (const child of resource.children()) {
-            await visit(child, request.syncLevel === "infinite");
+            await visit(
+              child.resource,
+              child.info,
+              request.syncLevel === "infinite",
+            );
           }
         }
       };
-      await visit(this.resource(collection), true);
+      const resource = this.resource(collection);
+      const info = await resource.stat();
+      if (info) await visit(resource, info, true);
       changes = currentChanges;
       nextRevision = (await this.changes(collection, 0, request.syncLevel))
         .revision;

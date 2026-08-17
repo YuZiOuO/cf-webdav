@@ -4,7 +4,6 @@ import type { WebDavState } from "./state";
 import { newETag, type EntityTag } from "../rfc4918/http";
 import type {
   DavByteRange,
-  DavCollection,
   DavFile,
   DavFileData,
   DavPath,
@@ -43,18 +42,13 @@ export class DavResource {
     return this.resolve(dirname(this.path) || "/");
   }
 
-  child(name: string) {
-    return new DavResource(join(this.path, name), this.filesystem, this.state);
-  }
-
   async stat(): Promise<DavResourceInfo | undefined> {
     const resource = await this.filesystem.stat(this.path);
     return resource ? toDavResourceInfo(resource) : undefined;
   }
 
-  async etag(): Promise<EntityTag | undefined> {
-    const resource = await this.filesystem.stat(this.path);
-    return resource ? this.state.ensureETag(this.path, newETag) : undefined;
+  async etag(): Promise<EntityTag> {
+    return this.state.ensureETag(this.path, newETag);
   }
 
   async readFile(range?: DavByteRange) {
@@ -73,35 +67,40 @@ export class DavResource {
     };
   }
 
-  async *children(): AsyncIterable<DavResource> {
+  async *children(): AsyncIterable<{
+    resource: DavResource;
+    info: DavResourceInfo;
+  }> {
     for await (const member of this.filesystem.readdir(this.path)) {
-      yield this.child(member.name);
+      yield {
+        resource: this.resolve(join(this.path, member.name)),
+        info: toDavResourceInfo(member.resource),
+      };
     }
   }
 
-  async writeFile(data: DavFileData): Promise<DavFile> {
-    const file = await this.filesystem.writeFile(this.path, {
+  async writeFile(data: DavFileData): Promise<EntityTag> {
+    await this.filesystem.writeFile(this.path, {
       body: data.body,
       size: data.contentLength,
       ...(data.contentType ? { contentType: data.contentType } : {}),
     });
-    await this.state.setETag(this.path, newETag());
-    return toDavResourceInfo(file) as DavFile;
+    const etag = newETag();
+    await this.state.setETag(this.path, etag);
+    return etag;
   }
 
-  async createCollection(): Promise<DavCollection> {
-    const collection = await this.filesystem.mkdir(this.path);
-    await this.state.setETag(this.path, newETag());
-    return toDavResourceInfo(collection) as DavCollection;
+  async createCollection(): Promise<EntityTag> {
+    await this.filesystem.mkdir(this.path);
+    const etag = newETag();
+    await this.state.setETag(this.path, etag);
+    return etag;
   }
 
   async delete(): Promise<void> {
-    const info = await this.stat();
-    if (!info) return;
-    const recursive = info.kind === "collection";
-    await this.filesystem.remove(this.path, { recursive });
-    await this.state.removeProperties(this.path, recursive);
-    await this.state.removeETags(this.path, recursive);
+    await this.filesystem.remove(this.path, { recursive: true });
+    await this.state.removeProperties(this.path, true);
+    await this.state.removeETags(this.path, true);
   }
 
   async copyTo(
