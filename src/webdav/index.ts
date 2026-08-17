@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { methodNotAllowed } from "hono/method-not-allowed";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { FileSystemError } from "../filesystem";
 import type { FileSystemErrorCode } from "../filesystem";
@@ -87,9 +88,10 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+app.use(methodNotAllowed({ app }));
+
 app.route("/", rfc4918);
 app.route("/", rfc5689);
 app.route("/", rfc6578);
-app.all("*", (c) => c.text("Method Not Allowed", 405));
 
 export default app;
