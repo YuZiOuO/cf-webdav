@@ -23,9 +23,7 @@ export const readFile = async (
   path: Path,
   options?: ReadFileOptions,
 ): Promise<FileContent> => {
-  const stored = unwrapState(
-    await deps.state.readResource(path, options?.preconditions),
-  );
+  const stored = unwrapState(await deps.state.readResource(path));
   if (!stored) throw new FileSystemError("not-found", "Resource not found");
   if (stored.kind !== "file")
     throw new FileSystemError("not-file", "Resource is a directory");

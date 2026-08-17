@@ -1,25 +1,33 @@
-import type {
-  DavPropertyService,
-  ExtendedMkcol,
-  FileSystem,
-  LockManager,
-  Path,
-  StorageQuotaProvider,
-  SyncCollection,
-} from "../../interfaces";
+/** A decoded absolute URL path used inside the WebDAV implementation. */
+export type DavPath = string;
 
-export type DavEnv = {
-  Bindings: CloudflareBindings;
-  Variables: {
-    path: Path;
-    dav: {
-      tree: FileSystem;
-      properties: DavPropertyService;
-      locks: LockManager;
-      sync: SyncCollection;
-      quota: StorageQuotaProvider;
-      mkcol: ExtendedMkcol;
-      stateTokenMatches: (path: Path, token: string) => Promise<boolean>;
-    };
-  };
-};
+export interface DavByteRange {
+  start: number;
+  end?: number;
+}
+
+export interface DavFile {
+  kind: "file";
+  lastModified: Date;
+  contentLength: number;
+  contentType?: string;
+}
+
+export interface DavCollection {
+  kind: "collection";
+  lastModified: Date;
+}
+
+export type DavResourceInfo = DavFile | DavCollection;
+
+export interface DavFileContent {
+  file: DavFile;
+  body: ReadableStream<Uint8Array>;
+  range?: DavByteRange;
+}
+
+export interface DavFileData {
+  body: ReadableStream<Uint8Array>;
+  contentLength: number;
+  contentType?: string;
+}

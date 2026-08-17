@@ -5,7 +5,6 @@ import type {
   FileData,
   Path,
   ResourceId,
-  WriteFileOptions,
 } from "../../interfaces";
 import {
   deleteReleasedObjects,
@@ -21,7 +20,6 @@ export const writeFile = async (
   deps: FileSystemDependencies,
   path: Path,
   data: FileData,
-  options?: WriteFileOptions,
 ) => {
   const existing = unwrapState(await deps.state.readResource(path));
   if (existing?.kind === "directory")
@@ -34,16 +32,12 @@ export const writeFile = async (
   let written: { resource: StoredFile; releasedObjectKeys: string[] };
   try {
     written = unwrapState(
-      await deps.state.writeFile(
-        path,
-        {
-          id,
-          objectKey: key,
-          size: stored.size,
-          ...(data.contentType ? { contentType: data.contentType } : {}),
-        },
-        options?.preconditions,
-      ),
+      await deps.state.writeFile(path, {
+        id,
+        objectKey: key,
+        size: stored.size,
+        ...(data.contentType ? { contentType: data.contentType } : {}),
+      }),
     );
   } catch (error) {
     await deleteReleasedObjects(deps.objects, [key]);

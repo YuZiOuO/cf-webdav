@@ -10,7 +10,7 @@ import type {
   DavPropStat,
   Lock,
   LockScope,
-} from "../../interfaces";
+} from "./types";
 import {
   appendDavElement,
   DAV_NAMESPACE,

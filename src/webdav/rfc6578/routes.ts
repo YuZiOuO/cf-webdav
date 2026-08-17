@@ -1,5 +1,5 @@
-import type { SyncToken } from "../../interfaces";
-import type { DavEnv } from "../core/types";
+import type { SyncToken } from "./types";
+import type { DavEnv } from "../types";
 import { Hono } from "hono";
 import { toHref } from "../../path";
 import { isValidXml } from "../core/xml";
@@ -25,9 +25,9 @@ rfc6578.on("REPORT", "*", async (c) => {
     result.changes.map(async (change) =>
       change.kind === "changed"
         ? {
-            href: toHref(change.path, change.resource.kind === "directory"),
+            href: toHref(change.path, change.resource.kind === "collection"),
             propstats: await dav.properties.propfind(
-              change.path,
+              dav.resource(change.path),
               change.resource,
               { kind: "prop", names: request.properties },
             ),

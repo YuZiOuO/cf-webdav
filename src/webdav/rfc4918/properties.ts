@@ -1,17 +1,16 @@
 import { basename } from "node:path/posix";
+import type { DavResource } from "../core/resource";
+import type { DavResourceInfo } from "../core/types";
+import type { WebDavState } from "../core/state";
+import type { DavLocks } from "./locks";
 import type {
   DavPropfindRequest,
   DavProperty,
   DavPropertyName,
-  DavPropertyService,
   DavPropStat,
   DavProppatchInstruction,
-  LockManager,
-  LockScope,
-  Path,
-  Resource,
-} from "../../interfaces";
-import type { WebDavState } from "./state";
+} from "./types";
+import { newETag } from "./http";
 import {
   appendDavElement,
   createDavProperty,
@@ -20,28 +19,13 @@ import {
   propertyName,
   serializeProperty,
   DAV_NAMESPACE,
-} from "./xml";
+} from "../core/xml";
 
-const supportedLockProperty = (scopes: readonly LockScope[]): DavProperty => {
-  const property = createDavProperty("supportedlock");
-  for (const scope of scopes) {
-    const entry = appendDavElement(property, "lockentry");
-    const scopeElement = appendDavElement(entry, "lockscope");
-    appendDavElement(scopeElement, scope);
-    const typeElement = appendDavElement(entry, "locktype");
-    appendDavElement(typeElement, "write");
-  }
-  return { element: property };
-};
-
-export interface DavPropertyExtension {
-  liveProperties(
-    path: Path,
-    resource: Resource,
-    include: boolean,
-  ): Promise<readonly { name: DavPropertyName; property: DavProperty }[]>;
-  isProtected(name: DavPropertyName): boolean;
+export interface DavLiveProperty {
+  name: DavPropertyName;
+  property: DavProperty;
 }
+
 export const propertyKey = ({ namespaceURI, localName }: DavPropertyName) =>
   `${namespaceURI}\0${localName}`;
 
@@ -55,38 +39,23 @@ export const protectedPropertyNames = new Set(
   ].map((localName) => propertyKey({ namespaceURI: DAV_NAMESPACE, localName })),
 );
 
-export const storedProperty = (property: DavProperty) => {
-  const { namespaceURI, localName } = propertyName(property.element);
-  return { namespaceURI, localName, xml: serializeProperty(property) };
-};
-
 const instructionProperty = (instruction: DavProppatchInstruction) =>
   instruction.kind === "set"
     ? instruction.property
     : { element: createPropertyElement(instruction.name) };
 
-const isProtectedInstruction = (instruction: DavProppatchInstruction) =>
-  protectedPropertyNames.has(
-    propertyKey(
-      instruction.kind === "set"
-        ? propertyName(instruction.property.element)
-        : instruction.name,
-    ),
-  );
-
-export class DavProperties implements DavPropertyService {
+export class DavProperties {
   constructor(
     private readonly state: DurableObjectStub<WebDavState>,
-    private readonly locks: LockManager,
-    private readonly extensions: readonly DavPropertyExtension[] = [],
+    private readonly locks: DavLocks,
+    private readonly extraProtected: readonly DavPropertyName[] = [],
   ) {}
 
-  private async liveProperties(
-    path: Path,
-    resource: Resource,
-    include: boolean,
-  ) {
-    const properties: { name: DavPropertyName; property: DavProperty }[] = [];
+  private async coreLiveProperties(
+    resource: DavResource,
+    info: DavResourceInfo,
+  ): Promise<DavLiveProperty[]> {
+    const properties: DavLiveProperty[] = [];
     const add = (localName: string, property: DavProperty) =>
       properties.push({
         name: { namespaceURI: DAV_NAMESPACE, localName },
@@ -96,55 +65,67 @@ export class DavProperties implements DavPropertyService {
     add("displayname", {
       element: createDavProperty(
         "displayname",
-        path === "/" ? "/" : basename(path),
+        resource.path === "/" ? "/" : basename(resource.path),
       ),
     });
     add("getlastmodified", {
       element: createDavProperty(
         "getlastmodified",
-        resource.lastModified.toUTCString(),
+        info.lastModified.toUTCString(),
       ),
     });
-    add("getetag", { element: createDavProperty("getetag", resource.etag) });
+    const etag = await this.state.ensureETag(resource.path, newETag);
+    add("getetag", { element: createDavProperty("getetag", etag) });
 
     const resourceType = createDavProperty("resourcetype");
-    if (resource.kind === "directory")
+    if (info.kind === "collection")
       appendDavElement(resourceType, "collection");
     add("resourcetype", { element: resourceType });
-    add(
-      "supportedlock",
-      supportedLockProperty(await this.locks.getSupportedLockScopes(path)),
-    );
+    const supportedLock = createDavProperty("supportedlock");
+    for (const scope of await this.locks.getSupportedLockScopes()) {
+      const entry = appendDavElement(supportedLock, "lockentry");
+      const scopeElement = appendDavElement(entry, "lockscope");
+      appendDavElement(scopeElement, scope);
+      const typeElement = appendDavElement(entry, "locktype");
+      appendDavElement(typeElement, "write");
+    }
+    add("supportedlock", { element: supportedLock });
 
-    if (resource.kind === "file") {
+    if (info.kind === "file") {
       add("getcontentlength", {
-        element: createDavProperty("getcontentlength", String(resource.size)),
+        element: createDavProperty(
+          "getcontentlength",
+          String(info.contentLength),
+        ),
       });
-      if (resource.contentType)
+      if (info.contentType)
         add("getcontenttype", {
-          element: createDavProperty("getcontenttype", resource.contentType),
+          element: createDavProperty("getcontenttype", info.contentType),
         });
     }
-    for (const extension of this.extensions)
-      properties.push(
-        ...(await extension.liveProperties(path, resource, include)),
-      );
     return properties;
   }
 
+  isProtectedName(name: DavPropertyName) {
+    return (
+      protectedPropertyNames.has(propertyKey(name)) ||
+      this.extraProtected.some(
+        (candidate) => propertyKey(candidate) === propertyKey(name),
+      )
+    );
+  }
+
   async propfind(
-    path: Path,
-    resource: Resource,
+    resource: DavResource,
+    info: DavResourceInfo,
     request: DavPropfindRequest,
+    extraLive: readonly DavLiveProperty[] = [],
   ): Promise<readonly DavPropStat[]> {
     const available = [
-      ...(await this.liveProperties(
-        path,
-        resource,
-        request.kind !== "allprop",
-      )),
+      ...(await this.coreLiveProperties(resource, info)),
+      ...extraLive,
     ];
-    for (const stored of await this.state.getProperties(path)) {
+    for (const stored of await this.state.getProperties(resource.path)) {
       const property = parseProperty(stored.xml);
       available.push({ name: propertyName(property.element), property });
     }
@@ -182,19 +163,21 @@ export class DavProperties implements DavPropertyService {
   }
 
   async proppatch(
-    path: Path,
-    _resource: Resource,
+    resource: DavResource,
     instructions: readonly DavProppatchInstruction[],
   ): Promise<readonly DavPropStat[]> {
-    const isProtected = (instruction: DavProppatchInstruction) =>
-      isProtectedInstruction(instruction) ||
-      this.extensions.some((extension) =>
-        extension.isProtected(
-          instruction.kind === "set"
-            ? propertyName(instruction.property.element)
-            : instruction.name,
-        ),
+    const isProtected = (instruction: DavProppatchInstruction) => {
+      const name =
+        instruction.kind === "set"
+          ? propertyName(instruction.property.element)
+          : instruction.name;
+      return (
+        protectedPropertyNames.has(propertyKey(name)) ||
+        this.extraProtected.some(
+          (candidate) => propertyKey(candidate) === propertyKey(name),
+        )
       );
+    };
     if (instructions.some(isProtected)) {
       return instructions.map((instruction) => ({
         properties: [instructionProperty(instruction)],
@@ -203,15 +186,22 @@ export class DavProperties implements DavPropertyService {
     }
 
     const stored: Parameters<WebDavState["patchProperties"]>[1] =
-      instructions.map((instruction) =>
-        instruction.kind === "set"
-          ? {
-              kind: "set" as const,
-              property: storedProperty(instruction.property),
-            }
-          : { kind: "remove" as const, name: instruction.name },
-      );
-    const result = await this.state.patchProperties(path, stored);
+      instructions.map((instruction) => {
+        if (instruction.kind !== "set")
+          return { kind: "remove" as const, name: instruction.name };
+        const { namespaceURI, localName } = propertyName(
+          instruction.property.element,
+        );
+        return {
+          kind: "set" as const,
+          property: {
+            namespaceURI,
+            localName,
+            xml: serializeProperty(instruction.property),
+          },
+        };
+      });
+    const result = await this.state.patchProperties(resource.path, stored);
     if (!result.ok) throw new Error(result.error);
     return instructions.map((instruction) => ({
       properties: [instructionProperty(instruction)],

@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { join, relative } from "node:path/posix";
-import type { LockDepth, LockScope } from "../../interfaces";
+import type { LockDepth, LockScope } from "../rfc4918/types";
+import type { EntityTag } from "../rfc4918/http";
 
 interface WebDavProperty {
   namespaceURI: string;
@@ -71,12 +72,68 @@ export class WebDavState extends DurableObject {
         expires_at INTEGER,
         owner_xml TEXT
       )`);
+      ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS dav_etags (
+        resource_path TEXT PRIMARY KEY,
+        etag TEXT NOT NULL
+      )`);
       return Promise.resolve();
     });
   }
 
   private transaction<T>(callback: () => T) {
     return this.ctx.storage.transactionSync(callback);
+  }
+
+  getETag(path: string) {
+    return this.transaction(() => {
+      const row = this.ctx.storage.sql
+        .exec<{ etag: string }>(
+          "SELECT etag FROM dav_etags WHERE resource_path = ?",
+          path,
+        )
+        .toArray()[0];
+      return row?.etag as EntityTag | undefined;
+    });
+  }
+
+  ensureETag(path: string, create: () => EntityTag) {
+    return this.transaction(() => {
+      const existing = this.ctx.storage.sql
+        .exec<{ etag: string }>(
+          "SELECT etag FROM dav_etags WHERE resource_path = ?",
+          path,
+        )
+        .toArray()[0];
+      if (existing) return existing.etag as EntityTag;
+      const etag = create();
+      this.ctx.storage.sql.exec(
+        "INSERT INTO dav_etags (resource_path, etag) VALUES (?, ?)",
+        path,
+        etag,
+      );
+      return etag;
+    });
+  }
+
+  setETag(path: string, etag: EntityTag) {
+    return this.transaction(() => {
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO dav_etags (resource_path, etag) VALUES (?, ?)",
+        path,
+        etag,
+      );
+    });
+  }
+
+  removeETags(path: string, recursive: boolean) {
+    return this.transaction(() => {
+      this.ctx.storage.sql.exec(
+        recursive
+          ? "DELETE FROM dav_etags WHERE resource_path = ? OR substr(resource_path, 1, ?) = ?"
+          : "DELETE FROM dav_etags WHERE resource_path = ?",
+        ...(recursive ? [path, path.length + 1, `${path}/`] : [path]),
+      );
+    });
   }
 
   getProperties(path: string) {

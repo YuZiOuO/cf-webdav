@@ -1,14 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { basename, dirname, join, relative } from "node:path/posix";
-import type { EntityTag, Preconditions } from "../../interfaces";
-import { matchesPreconditions, newEntityTag } from "./helper";
 import type { StateResult } from "./errors";
 
 export interface StoredFile {
   path: string;
   id: string;
   kind: "file";
-  etag: EntityTag;
   createdAt: number;
   lastModified: number;
   size: number;
@@ -20,7 +17,6 @@ interface StoredDirectory {
   path: string;
   id: string;
   kind: "directory";
-  etag: EntityTag;
   createdAt: number;
   lastModified: number;
 }
@@ -36,7 +32,6 @@ interface FileWrite {
 
 interface DirectoryCreate {
   id?: string;
-  etag?: EntityTag;
 }
 
 interface CopyPlan {
@@ -59,7 +54,6 @@ interface ResourceRow {
   path: string;
   id: string;
   kind: "file" | "directory";
-  etag: string;
   created_at: number;
   last_modified: number;
   object_key: string | null;
@@ -97,7 +91,6 @@ export class FileSystemState extends DurableObject {
           name TEXT NOT NULL,
           id TEXT NOT NULL UNIQUE,
           kind TEXT NOT NULL,
-          etag TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           last_modified INTEGER NOT NULL,
           object_key TEXT,
@@ -138,10 +131,9 @@ export class FileSystemState extends DurableObject {
       const now = Date.now();
       ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO fs_resources
-         (path, parent_path, name, id, kind, etag, created_at, last_modified)
-         VALUES (?, NULL, '', 'root', 'directory', ?, ?, ?)`,
+         (path, parent_path, name, id, kind, created_at, last_modified)
+         VALUES (?, NULL, '', 'root', 'directory', ?, ?)`,
         ROOT,
-        '"root"',
         now,
         now,
       );
@@ -156,7 +148,7 @@ export class FileSystemState extends DurableObject {
   private resource(path: string) {
     const row = this.ctx.storage.sql
       .exec<ResourceRow>(
-        `SELECT path, id, kind, etag, created_at, last_modified, object_key,
+        `SELECT path, id, kind, created_at, last_modified, object_key,
                 size, content_type
          FROM fs_resources WHERE path = ?`,
         path,
@@ -169,7 +161,6 @@ export class FileSystemState extends DurableObject {
     const base = {
       path: row.path,
       id: row.id,
-      etag: row.etag as EntityTag,
       createdAt: row.created_at,
       lastModified: row.last_modified,
     };
@@ -187,7 +178,7 @@ export class FileSystemState extends DurableObject {
     const prefix = path === ROOT ? ROOT : `${path}/`;
     return this.ctx.storage.sql
       .exec<ResourceRow>(
-        `SELECT path, id, kind, etag, created_at, last_modified, object_key,
+        `SELECT path, id, kind, created_at, last_modified, object_key,
                 size, content_type
          FROM fs_resources
          WHERE path = ? OR substr(path, 1, ?) = ?
@@ -203,15 +194,14 @@ export class FileSystemState extends DurableObject {
   private insertResource(resource: StoredResource) {
     this.ctx.storage.sql.exec(
       `INSERT INTO fs_resources
-       (path, parent_path, name, id, kind, etag, created_at, last_modified,
+       (path, parent_path, name, id, kind, created_at, last_modified,
         object_key, size, content_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       resource.path,
       resource.path === ROOT ? null : dirname(resource.path),
       resource.path === ROOT ? "" : basename(resource.path),
       resource.id,
       resource.kind,
-      resource.etag,
       resource.createdAt,
       resource.lastModified,
       resource.kind === "file" ? (resource.objectKey ?? null) : null,
@@ -222,8 +212,7 @@ export class FileSystemState extends DurableObject {
 
   private touch(path: string, now: number) {
     this.ctx.storage.sql.exec(
-      "UPDATE fs_resources SET etag = ?, last_modified = ? WHERE path = ?",
-      newEntityTag(),
+      "UPDATE fs_resources SET last_modified = ? WHERE path = ?",
       now,
       path,
     );
@@ -367,14 +356,9 @@ export class FileSystemState extends DurableObject {
     };
   }
 
-  readResource(
-    path: string,
-    preconditions?: Preconditions,
-  ): StateResult<StoredResource | undefined> {
+  readResource(path: string): StateResult<StoredResource | undefined> {
     return this.transaction(() => {
       const resource = this.resource(path);
-      if (resource && !matchesPreconditions(resource.etag, preconditions))
-        return { ok: false, error: "precondition-failed" };
       return { ok: true, value: resource };
     });
   }
@@ -389,7 +373,7 @@ export class FileSystemState extends DurableObject {
         ok: true,
         value: this.ctx.storage.sql
           .exec<ResourceRow>(
-            `SELECT path, id, kind, etag, created_at, last_modified, object_key,
+            `SELECT path, id, kind, created_at, last_modified, object_key,
                     size, content_type
              FROM fs_resources WHERE parent_path = ? ORDER BY name`,
             path,
@@ -403,7 +387,6 @@ export class FileSystemState extends DurableObject {
   writeFile(
     path: string,
     file: FileWrite,
-    preconditions?: Preconditions,
   ): StateResult<{
     resource: StoredFile;
     releasedObjectKeys: string[];
@@ -417,15 +400,11 @@ export class FileSystemState extends DurableObject {
       const existing = this.resource(path);
       if (existing?.kind === "directory")
         return { ok: false, error: "already-exists" };
-      if (!matchesPreconditions(existing?.etag, preconditions))
-        return { ok: false, error: "precondition-failed" };
-
       const now = Date.now();
       const resource: StoredFile = {
         path,
         id: file.id,
         kind: "file",
-        etag: newEntityTag(),
         createdAt: existing?.createdAt ?? now,
         lastModified: now,
         size: file.size,
@@ -441,11 +420,10 @@ export class FileSystemState extends DurableObject {
       if (existing) {
         this.ctx.storage.sql.exec(
           `UPDATE fs_resources
-           SET id = ?, etag = ?, last_modified = ?, object_key = ?, size = ?,
+           SET id = ?, last_modified = ?, object_key = ?, size = ?,
                content_type = ?
            WHERE path = ?`,
           resource.id,
-          resource.etag,
           resource.lastModified,
           resource.objectKey,
           resource.size,
@@ -495,7 +473,6 @@ export class FileSystemState extends DurableObject {
       path,
       id: directory.id ?? crypto.randomUUID(),
       kind: "directory",
-      etag: directory.etag ?? newEntityTag(),
       createdAt: now,
       lastModified: now,
     };
@@ -561,7 +538,6 @@ export class FileSystemState extends DurableObject {
               ? destinationPath
               : join(destinationPath, relativePath),
           id: crypto.randomUUID(),
-          etag: newEntityTag(),
           createdAt: now,
           lastModified: now,
         };

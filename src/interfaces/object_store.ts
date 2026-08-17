@@ -5,25 +5,14 @@ export type ObjectKey = string & {
   readonly [objectKeyType]: "ObjectKey";
 };
 
-/** An HTTP entity-tag, including its quoted wire representation. */
-export type EntityTag = `"${string}"` | `W/"${string}"`;
-
 /** A byte range with an inclusive end offset. */
 export interface ByteRange {
   start: number;
   end?: number;
 }
 
-/** HTTP conditional request fields shared by object and file operations. */
-export interface Preconditions {
-  ifMatch?: EntityTag | "*";
-  ifNoneMatch?: EntityTag | "*";
-}
-
 export interface ObjectMetadata {
-  etag: EntityTag;
   size: number;
-  lastModified: Date;
   contentType?: string;
 }
 
@@ -40,11 +29,6 @@ export interface ObjectData {
 
 export interface GetObjectOptions {
   range?: ByteRange;
-  preconditions?: Preconditions;
-}
-
-export interface PutObjectOptions {
-  preconditions?: Preconditions;
 }
 
 /**
@@ -57,10 +41,6 @@ export interface ObjectStore {
     key: ObjectKey,
     options?: GetObjectOptions,
   ): Promise<ObjectBody | undefined>;
-  put(
-    key: ObjectKey,
-    data: ObjectData,
-    options?: PutObjectOptions,
-  ): Promise<ObjectMetadata>;
+  put(key: ObjectKey, data: ObjectData): Promise<ObjectMetadata>;
   delete(key: ObjectKey): Promise<void>;
 }

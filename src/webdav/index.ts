@@ -3,16 +3,15 @@ import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { FileSystemError } from "../filesystem";
 import type { FileSystemErrorCode } from "../filesystem";
-import { ObjectStoreFileSystem } from "../filesystem";
-import { R2ObjectStore } from "../filesystem";
+import { createR2FileSystem } from "../filesystem";
 import { DavLocks } from "./rfc4918/locks";
-import { DavProperties } from "./core/properties";
+import { DavProperties } from "./rfc4918/properties";
 import { decodePath } from "../path";
-import { DavQuotaProperties, FileSystemQuotaProvider } from "./rfc4331/quota";
-import { DavMkcol } from "./rfc5689/mkcol";
-import { DavSync, DavSyncProperties } from "./rfc6578/sync";
-import { DavTree } from "./core/tree";
-import type { DavEnv } from "./core/types";
+import { quotaProtectedPropertyNames } from "./rfc4331/quota";
+import { DavSync, syncProtectedPropertyNames } from "./rfc6578/sync";
+import { DavResource, toDavResourceInfo } from "./core/resource";
+import type { DavPath } from "./core/types";
+import type { DavEnv } from "./types";
 import { rfc4918 } from "./rfc4918/routes";
 import { rfc5689 } from "./rfc5689/routes";
 import { rfc6578 } from "./rfc6578/routes";
@@ -50,26 +49,37 @@ app.use("*", async (c, next) => {
   try {
     const path = decodePath(new URL(c.req.url).pathname);
     const webDavState = c.env.WebDavState.getByName("root");
-    const filesystem = new ObjectStoreFileSystem(
-      new R2ObjectStore(c.env.BUCKET),
-      c.env.FileSystemState.getByName("root"),
-    );
+    const filesystem = createR2FileSystem(c.env);
     const locks = new DavLocks(webDavState);
-    const sync = new DavSync(filesystem, filesystem);
-    const quota = new FileSystemQuotaProvider(filesystem);
+    const properties = new DavProperties(webDavState, locks, [
+      ...quotaProtectedPropertyNames,
+      ...syncProtectedPropertyNames,
+    ]);
+    const resource = (target: DavPath) =>
+      new DavResource(target, filesystem, webDavState);
+    const sync = new DavSync(resource, async (collection, revision, level) => {
+      const result = await filesystem.changesSince(collection, revision, level);
+      return {
+        revision: result.revision,
+        changes: result.changes.map((change) =>
+          change.kind === "changed"
+            ? {
+                kind: "changed",
+                path: change.path,
+                resource: toDavResourceInfo(change.resource),
+              }
+            : change,
+        ),
+      };
+    });
     c.set("path", path);
     c.set("dav", {
-      tree: new DavTree(filesystem, webDavState),
-      properties: new DavProperties(webDavState, locks, [
-        new DavSyncProperties(sync),
-        new DavQuotaProperties(quota),
-      ]),
+      resource,
       locks,
+      properties,
       sync,
-      quota,
-      mkcol: new DavMkcol(filesystem, webDavState),
-      stateTokenMatches: async (target, token) =>
-        token === (await sync.getSyncToken(target)),
+      quota: (target) => filesystem.getQuota(target),
+      stateTokenMatches: sync.stateTokenMatches.bind(sync),
     });
   } catch {
     return c.text("Invalid path", 400);

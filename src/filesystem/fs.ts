@@ -11,7 +11,6 @@ import type {
   RemoveOptions,
   StorageQuota,
   StorageQuotaProvider,
-  WriteFileOptions,
 } from "../interfaces";
 import { copy } from "./vfs/copy";
 import { move } from "./vfs/move";
@@ -46,8 +45,8 @@ export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
     return readdir(this.deps(), path);
   }
 
-  writeFile(path: Path, data: FileData, options?: WriteFileOptions) {
-    return writeFile(this.deps(), path, data, options);
+  writeFile(path: Path, data: FileData) {
+    return writeFile(this.deps(), path, data);
   }
 
   mkdir(path: Path) {

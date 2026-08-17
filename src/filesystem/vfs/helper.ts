@@ -21,7 +21,6 @@ export const resourceId = () => crypto.randomUUID() as ResourceId;
 export const toResource = (stored: StoredResource): Resource => {
   const base = {
     id: stored.id as ResourceId,
-    etag: stored.etag,
     createdAt: new Date(stored.createdAt),
     lastModified: new Date(stored.lastModified),
   };

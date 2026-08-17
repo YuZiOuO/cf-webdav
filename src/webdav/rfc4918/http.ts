@@ -1,12 +1,11 @@
-import type {
-  DavIfCondition,
-  DavIfHeader,
-  DavIfList,
-  EntityTag,
-  Path,
-} from "../../interfaces";
+import type { DavIfCondition, DavIfHeader, DavIfList } from "./types";
+import type { DavPath } from "../core/types";
 import { FileSystemError } from "../../filesystem";
 import { decodePath } from "../../path";
+
+export type EntityTag = `"${string}"` | `W/"${string}"`;
+
+export const newETag = () => `"${crypto.randomUUID()}"` as EntityTag;
 
 interface IfMatchContext {
   etag?: EntityTag;
@@ -69,7 +68,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
       };
     throw new FileSystemError("invalid-if", "Invalid If header");
   };
-  const parseList = (resource?: Path): DavIfList => {
+  const parseList = (resource?: DavPath): DavIfList => {
     skipSpace();
     if (value[index] !== "(")
       throw new FileSystemError("invalid-if", "Invalid If header");
@@ -89,7 +88,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
       throw new FileSystemError("invalid-if", "Invalid If header");
     return { ...(resource ? { resource } : {}), conditions };
   };
-  const parseResource = (): Path => {
+  const parseResource = (): DavPath => {
     const tag = parseTag();
     try {
       const pathname = tag.startsWith("/") ? tag : new URL(tag).pathname;
@@ -115,26 +114,11 @@ export const parseIfHeader = (header: string): DavIfHeader => {
   return lists;
 };
 
-const matchesCondition = async (
-  condition: DavIfCondition,
-  context: IfMatchContext,
-  stateTokenMatches: (token: string) => Promise<boolean>,
-) => {
-  const matches =
-    condition.kind === "entity-tag"
-      ? context.etag === condition.etag
-      : condition.token === "DAV:no-lock"
-        ? false
-        : context.lockTokens.has(condition.token) ||
-          (await stateTokenMatches(condition.token));
-  return condition.not ? !matches : matches;
-};
-
 export const ifHeaderMatches = async (
   header: DavIfHeader,
-  requestPath: Path,
-  contextFor: (path: Path) => Promise<IfMatchContext>,
-  stateTokenMatches: (token: string, path: Path) => Promise<boolean> = () =>
+  requestPath: DavPath,
+  contextFor: (path: DavPath) => Promise<IfMatchContext>,
+  stateTokenMatches: (token: string, path: DavPath) => Promise<boolean> = () =>
     Promise.resolve(false),
 ) => {
   for (const list of header) {
@@ -142,11 +126,16 @@ export const ifHeaderMatches = async (
     const context = await contextFor(resource);
     if (
       await Promise.all(
-        list.conditions.map(async (condition) =>
-          matchesCondition(condition, context, (token) =>
-            stateTokenMatches(token, resource),
-          ),
-        ),
+        list.conditions.map(async (condition) => {
+          const matches =
+            condition.kind === "entity-tag"
+              ? context.etag === condition.etag
+              : condition.token === "DAV:no-lock"
+                ? false
+                : context.lockTokens.has(condition.token) ||
+                  (await stateTokenMatches(condition.token, resource));
+          return condition.not ? !matches : matches;
+        }),
       ).then((matches) => matches.every(Boolean))
     )
       return true;

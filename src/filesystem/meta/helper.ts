@@ -1,27 +1,5 @@
-import type { EntityTag, Preconditions } from "../../interfaces";
 import { FileSystemError } from "../errors";
 import type { StateResult } from "./errors";
-
-// Entity tags and HTTP precondition checks.
-export const newEntityTag = () => `"${crypto.randomUUID()}"` as EntityTag;
-
-export const matchesPreconditions = (
-  etag: EntityTag | undefined,
-  preconditions?: Preconditions,
-) => {
-  if (preconditions?.ifMatch) {
-    if (!etag) return false;
-    if (preconditions.ifMatch !== "*" && preconditions.ifMatch !== etag)
-      return false;
-  }
-  if (
-    preconditions?.ifNoneMatch &&
-    etag &&
-    (preconditions.ifNoneMatch === "*" || preconditions.ifNoneMatch === etag)
-  )
-    return false;
-  return true;
-};
 
 // Converts Durable Object RPC results into filesystem errors at the boundary.
 export const unwrapState = <T>(result: StateResult<T>) => {

@@ -1,5 +1,4 @@
 import type {
-  EntityTag,
   GetObjectOptions,
   ObjectData,
   ObjectKey,
@@ -8,9 +7,7 @@ import type {
 } from "../../interfaces";
 
 const toMetadata = (object: R2Object): ObjectMetadata => ({
-  etag: object.httpEtag as EntityTag,
   size: object.size,
-  lastModified: object.uploaded,
   ...(object.httpMetadata?.contentType
     ? { contentType: object.httpMetadata.contentType }
     : {}),

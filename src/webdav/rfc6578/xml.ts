@@ -1,5 +1,5 @@
 import { DOMParser } from "@xmldom/xmldom";
-import type { DavPropertyName } from "../../interfaces";
+import type { DavPropertyName } from "../rfc4918/types";
 import { DAV_NAMESPACE, elementChildren, propertyName } from "../core/xml";
 import { multistatus as baseMultistatus } from "../rfc4918/xml";
 

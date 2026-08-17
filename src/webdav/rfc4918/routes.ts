@@ -1,17 +1,13 @@
-import { dirname, join } from "node:path/posix";
-import type {
-  DavPropfindRequest,
-  LockManager,
-  LockToken,
-  Path,
-  ReadFileOptions,
-} from "../../interfaces";
-import type { DavEnv } from "../core/types";
+import type { DavPropfindRequest, LockToken } from "./types";
+import type { DavLocks } from "./locks";
+import type { DavPath } from "../core/types";
+import type { DavEnv } from "../types";
 import { Hono } from "hono";
 import rangeParser from "range-parser";
-import { ifHeaderMatches, parseIfHeader } from "./if";
+import { ifHeaderMatches, parseIfHeader } from "./http";
 import { decodePath, toHref } from "../../path";
 import { isValidXml } from "../core/xml";
+import { quotaLiveProperties } from "../rfc4331/quota";
 import {
   multistatus,
   parseLockInfo,
@@ -25,16 +21,9 @@ const ALLOW =
   "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT";
 const DAV = "1, 2, extended-mkcol";
 
-const emptyBody = () =>
-  new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.close();
-    },
-  });
-
 const isLockedWithoutToken = async (
-  locks: LockManager,
-  path: Path,
+  locks: DavLocks,
+  path: DavPath,
   ifHeader: string | undefined,
 ) => {
   const active = await locks.getLocks(path);
@@ -57,7 +46,7 @@ rfc4918.options("*", (c) => c.body(null, 204, { Allow: ALLOW, DAV }));
 
 rfc4918.on("PROPFIND", "*", async (c) => {
   const path = c.get("path");
-  const resource = c.get("dav").tree;
+  const resource = c.get("dav").resource(path);
   const depth = (c.req.header("depth") ?? "infinity").toLowerCase();
   if (depth === "infinity")
     return c.body(
@@ -67,27 +56,39 @@ rfc4918.on("PROPFIND", "*", async (c) => {
     );
   if (depth !== "0" && depth !== "1")
     return c.text("Invalid Depth header", 400);
-  const target = await resource.stat(path);
-  if (!target) return c.text("Resource not found", 404);
+  const info = await resource.stat();
+  if (!info) return c.text("Resource not found", 404);
   const body = c.req.raw.body ? await c.req.text() : "";
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
   const request: DavPropfindRequest = body
     ? parsePropfind(body)
     : { kind: "allprop" };
-  const resources = [{ path, resource: target }];
-  if (depth === "1" && target.kind === "directory") {
-    for await (const entry of resource.readdir(path))
-      resources.push({
-        path: join(path, entry.name),
-        resource: entry.resource,
-      });
+  const resources = [{ resource, info }];
+  if (depth === "1" && info.kind === "collection") {
+    for await (const child of resource.children()) {
+      const childInfo = await child.stat();
+      if (childInfo) resources.push({ resource: child, info: childInfo });
+    }
   }
+  const dav = c.get("dav");
+  const include = request.kind !== "allprop";
   const responses = await Promise.all(
     resources.map(async (item) => ({
-      href: toHref(item.path, item.resource.kind === "directory"),
-      propstats: await c
-        .get("dav")
-        .properties.propfind(item.path, item.resource, request),
+      href: toHref(item.resource.path, item.info.kind === "collection"),
+      propstats: await dav.properties.propfind(
+        item.resource,
+        item.info,
+        request,
+        [
+          ...(await quotaLiveProperties(
+            dav.quota,
+            item.resource,
+            item.info,
+            include,
+          )),
+          ...(await dav.sync.liveProperties(item.resource, item.info)),
+        ],
+      ),
     })),
   );
   return c.body(multistatus(responses), 207, XML);
@@ -95,30 +96,30 @@ rfc4918.on("PROPFIND", "*", async (c) => {
 
 rfc4918.on("PROPPATCH", "*", async (c) => {
   const path = c.get("path");
-  const resource = c.get("dav").tree;
-  const target = await resource.stat(path);
-  if (!target) return c.text("Not Found", 404);
+  const resource = c.get("dav").resource(path);
+  const info = await resource.stat();
+  if (!info) return c.text("Not Found", 404);
   if (await isLockedWithoutToken(c.get("dav").locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
   const body = await c.req.text();
   if (!isValidXml(body)) return c.text("Invalid XML", 400);
   const propstats = await c
     .get("dav")
-    .properties.proppatch(path, target, parseProppatch(body));
-  const responseHref = toHref(path, target.kind === "directory");
+    .properties.proppatch(resource, parseProppatch(body));
+  const responseHref = toHref(path, info.kind === "collection");
   return c.body(multistatus([{ href: responseHref, propstats }]), 207, XML);
 });
 
 rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   const path = c.get("path");
-  const resource = c.get("dav").tree;
-  const file = await resource.stat(path);
+  const resource = c.get("dav").resource(path);
+  const file = await resource.stat();
   if (!file) return c.text("Not Found", 404);
   if (file.kind !== "file") return c.text("Resource is a directory", 405);
-  const options: ReadFileOptions = {};
   const rangeHeader = c.req.header("range");
+  let range: { start: number; end?: number } | undefined;
   if (rangeHeader) {
-    const ranges = rangeParser(file.size, rangeHeader);
+    const ranges = rangeParser(file.contentLength, rangeHeader);
     if (
       ranges === -1 ||
       ranges === -2 ||
@@ -126,28 +127,32 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
       ranges.length !== 1
     )
       return c.body(null, 416);
-    const [range] = ranges;
-    options.range = { start: range.start, end: range.end };
+    const [parsed] = ranges;
+    range = { start: parsed.start, end: parsed.end };
   }
-  const content = await resource.readFile(path, options);
+  const content = await resource.readFile(range);
+  const etag = await resource.etag();
+  if (!etag) return c.text("Resource not found", 404);
   const headers = new Headers({
     "Accept-Ranges": "bytes",
-    ETag: content.file.etag,
+    ETag: etag,
     "Last-Modified": content.file.lastModified.toUTCString(),
   });
   if (content.file.contentType)
     headers.set("Content-Type", content.file.contentType);
-  const range = content.range;
-  const status = range ? 206 : 200;
-  const end = range?.end ?? content.file.size - 1;
+  const contentRange = content.range;
+  const status = contentRange ? 206 : 200;
+  const end = contentRange?.end ?? content.file.contentLength - 1;
   headers.set(
     "Content-Length",
-    String(range ? end - range.start + 1 : content.file.size),
+    String(
+      contentRange ? end - contentRange.start + 1 : content.file.contentLength,
+    ),
   );
-  if (range)
+  if (contentRange)
     headers.set(
       "Content-Range",
-      `bytes ${range.start}-${end}/${content.file.size}`,
+      `bytes ${contentRange.start}-${end}/${content.file.contentLength}`,
     );
   if (c.req.method === "HEAD") return c.body(null, { status, headers });
   return c.body(content.body, { status, headers });
@@ -156,9 +161,9 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
 rfc4918.put("*", async (c) => {
   const path = c.get("path");
   if (path === "/") return c.text("Collection", 405, { Allow: ALLOW });
-  const resource = c.get("dav").tree;
-  const existing = await resource.stat(path);
-  if (existing?.kind === "directory")
+  const resource = c.get("dav").resource(path);
+  const existing = await resource.stat();
+  if (existing?.kind === "collection")
     return c.text("Collection exists", 405, { Allow: ALLOW });
   const dav = c.get("dav");
   const ifHeader = c.req.header("if");
@@ -175,29 +180,39 @@ rfc4918.put("*", async (c) => {
       !submitted.some((token) => locks.some((lock) => lock.token === token))
     )
       return c.text("Resource is locked", 423);
-    const contextFor = async (target: Path) => {
-      const targetResource = await resource.stat(target);
-      const targetLocks = await dav.locks.getLocks(target);
-      return {
-        etag: targetResource?.etag,
-        lockTokens: new Set(targetLocks.map((lock) => lock.token)),
-      };
-    };
     if (
-      !(await ifHeaderMatches(header, path, contextFor, (token, target) =>
-        dav.stateTokenMatches(target, token),
+      !(await ifHeaderMatches(
+        header,
+        path,
+        async (target) => {
+          const targetResource = dav.resource(target);
+          const targetInfo = await targetResource.stat();
+          const targetLocks = await dav.locks.getLocks(target);
+          return {
+            etag: targetInfo ? await targetResource.etag() : undefined,
+            lockTokens: new Set(targetLocks.map((lock) => lock.token)),
+          };
+        },
+        (token, target) => dav.stateTokenMatches(target, token),
       ))
     )
       return c.body(null, 412);
   } else if (locks.length) return c.text("Resource is locked", 423);
   const contentType = c.req.header("content-type");
-  const file = await resource.writeFile(path, {
-    body: c.req.raw.body ?? emptyBody(),
-    size: Number(c.req.header("content-length") ?? 0),
+  await resource.writeFile({
+    body:
+      c.req.raw.body ??
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      }),
+    contentLength: Number(c.req.header("content-length") ?? 0),
     ...(contentType ? { contentType } : {}),
   });
+  const etag = await resource.etag();
   return c.body(null, existing ? 204 : 201, {
-    ETag: file.etag,
+    ...(etag ? { ETag: etag } : {}),
     ...(existing ? {} : { Location: c.req.url }),
   });
 });
@@ -208,18 +223,18 @@ rfc4918.delete("*", async (c) => {
   const dav = c.get("dav");
   if (await isLockedWithoutToken(dav.locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
-  const target = await dav.tree.stat(path);
-  if (!target) return c.text("Not Found", 404);
-  await dav.tree.remove(path, { recursive: target.kind === "directory" });
+  const resource = dav.resource(path);
+  if (!(await resource.stat())) return c.text("Not Found", 404);
+  await resource.delete();
   return c.body(null, 204);
 });
 
 rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
   const dav = c.get("dav");
-  const source = c.get("path");
+  const source = dav.resource(c.get("path"));
   const destinationHeader = c.req.header("destination");
   if (!destinationHeader) return c.text("Invalid Destination header", 400);
-  let destination: Path;
+  let destination: DavPath;
   try {
     const url = new URL(destinationHeader, c.req.url);
     if (url.origin !== new URL(c.req.url).origin)
@@ -229,17 +244,17 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
     return c.text("Invalid Destination header", 400);
   }
   if (destination === "/") return c.text("Invalid destination", 403);
-  const sourceResource = await dav.tree.stat(source);
-  if (!sourceResource) return c.text("Not Found", 404);
+  const sourceInfo = await source.stat();
+  if (!sourceInfo) return c.text("Not Found", 404);
   const isMove = c.req.method === "MOVE";
   if (
     isMove &&
-    (await isLockedWithoutToken(dav.locks, source, c.req.header("if")))
+    (await isLockedWithoutToken(dav.locks, source.path, c.req.header("if")))
   )
     return c.text("Resource is locked", 423);
   const depth = (c.req.header("depth") ?? "infinity").toLowerCase();
   if (
-    sourceResource.kind === "directory" &&
+    sourceInfo.kind === "collection" &&
     depth !== "infinity" &&
     (isMove || depth !== "0")
   )
@@ -248,17 +263,19 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
   if (overwriteHeader !== "T" && overwriteHeader !== "F")
     return c.text("Invalid Overwrite header", 400);
   const overwrite = overwriteHeader === "T";
-  const existing = await dav.tree.stat(destination);
+  const destinationResource = dav.resource(destination);
+  const existing = await destinationResource.stat();
   if (existing && !overwrite) return c.text("Destination exists", 412);
   if (
     existing &&
     (await isLockedWithoutToken(dav.locks, destination, c.req.header("if")))
   )
     return c.text("Resource is locked", 423);
-  if (isMove) await dav.tree.move(source, destination, { overwrite });
+  if (isMove) await source.moveTo(destinationResource, overwrite);
   else
-    await dav.tree.copy(source, destination, {
-      recursive: sourceResource.kind === "directory" && depth !== "0",
+    await source.copyTo(destinationResource, {
+      depth:
+        sourceInfo.kind === "collection" && depth !== "0" ? "infinity" : "0",
       overwrite,
     });
   return c.body(
@@ -271,7 +288,8 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
 rfc4918.on("LOCK", "*", async (c) => {
   const path = c.get("path");
   const dav = c.get("dav");
-  const existing = await dav.tree.stat(path);
+  const resource = dav.resource(path);
+  const existing = await resource.stat();
   const timeoutHeader =
     c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
   let seconds: number | undefined;
@@ -287,12 +305,12 @@ rfc4918.on("LOCK", "*", async (c) => {
   const body = c.req.raw.body ? await c.req.text() : "";
   if (!body && !token) return c.text("Lock body is required", 400);
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
-  if (
-    !token &&
-    !existing &&
-    (await dav.tree.stat(dirname(path)))?.kind !== "directory"
-  )
-    return c.text("Parent directory not found", 409);
+  if (!token && !existing) {
+    const parent = resource.parent();
+    const parentInfo = parent ? await parent.stat() : undefined;
+    if (parentInfo?.kind !== "collection")
+      return c.text("Parent directory not found", 409);
+  }
   const lock = token
     ? await dav.locks.refresh(path, token as LockToken, seconds)
     : await (async () => {

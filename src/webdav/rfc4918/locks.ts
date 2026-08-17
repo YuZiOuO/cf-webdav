@@ -1,10 +1,5 @@
-import type {
-  Lock,
-  LockManager,
-  LockRequest,
-  LockToken,
-  Path,
-} from "../../interfaces";
+import type { DavPath } from "../core/types";
+import type { Lock, LockRequest, LockToken } from "./types";
 import { parseProperty, serializeProperty } from "../core/xml";
 import type { WebDavLock, WebDavState } from "../core/state";
 
@@ -24,18 +19,18 @@ const toLock = (lock: WebDavLock): Lock => ({
   ...(lock.owner ? { owner: parseProperty(lock.owner).element } : {}),
 });
 
-export class DavLocks implements LockManager {
+export class DavLocks {
   constructor(private readonly state: DurableObjectStub<WebDavState>) {}
 
   getSupportedLockScopes() {
     return Promise.resolve(["exclusive", "shared"] as const);
   }
 
-  async getLocks(path: Path) {
+  async getLocks(path: DavPath) {
     return (await this.state.getLocks(path)).map(toLock);
   }
 
-  async lock(path: Path, request: LockRequest) {
+  async lock(path: DavPath, request: LockRequest) {
     return toLock(
       unwrapState(
         await this.state.createLock(path, {
@@ -52,7 +47,7 @@ export class DavLocks implements LockManager {
     );
   }
 
-  async refresh(path: Path, token: LockToken, timeout?: Lock["timeout"]) {
+  async refresh(path: DavPath, token: LockToken, timeout?: Lock["timeout"]) {
     return toLock(
       unwrapState(
         await this.state.refreshLock(
@@ -64,7 +59,7 @@ export class DavLocks implements LockManager {
     );
   }
 
-  async unlock(path: Path, token: LockToken) {
+  async unlock(path: DavPath, token: LockToken) {
     unwrapState(await this.state.unlock(path, token));
   }
 }

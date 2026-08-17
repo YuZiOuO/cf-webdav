@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path/posix";
 import { Hono } from "hono";
 import { html } from "hono/html";
-import { ObjectStoreFileSystem, R2ObjectStore } from "../filesystem";
+import { createR2FileSystem } from "../filesystem";
 import type { FileSystem, Path } from "../interfaces";
 import { decodePath, toHref } from "../path";
 
@@ -12,10 +12,7 @@ browser.get("*", async (c, next) => {
   let filesystem: FileSystem;
   try {
     path = decodePath(new URL(c.req.url).pathname);
-    filesystem = new ObjectStoreFileSystem(
-      new R2ObjectStore(c.env.BUCKET),
-      c.env.FileSystemState.getByName("root"),
-    );
+    filesystem = createR2FileSystem(c.env);
   } catch {
     return c.text("Invalid path", 400);
   }

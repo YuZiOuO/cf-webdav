@@ -1,4 +1,4 @@
-import type { ByteRange, EntityTag, Preconditions } from "./object_store";
+import type { ByteRange } from "./object_store";
 import type { PathLike } from "node:fs";
 
 declare const resourceIdType: unique symbol;
@@ -13,7 +13,6 @@ export type ResourceId = string & {
 
 export interface ResourceBase {
   id: ResourceId;
-  etag: EntityTag;
   createdAt: Date;
   lastModified: Date;
 }
@@ -50,11 +49,6 @@ export interface FileContent {
 
 export interface ReadFileOptions {
   range?: ByteRange;
-  preconditions?: Preconditions;
-}
-
-export interface WriteFileOptions {
-  preconditions?: Preconditions;
 }
 
 export interface RemoveOptions {
@@ -91,11 +85,7 @@ export interface FileSystem {
   stat(path: Path): Promise<Resource | undefined>;
   readFile(path: Path, options?: ReadFileOptions): Promise<FileContent>;
   readdir(path: Path): AsyncIterable<DirectoryEntry>;
-  writeFile(
-    path: Path,
-    data: FileData,
-    options?: WriteFileOptions,
-  ): Promise<File>;
+  writeFile(path: Path, data: FileData): Promise<File>;
   mkdir(path: Path): Promise<Directory>;
   remove(path: Path, options?: RemoveOptions): Promise<void>;
   copy(

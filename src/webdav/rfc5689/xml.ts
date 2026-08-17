@@ -1,4 +1,4 @@
-import type { DavProperty, DavPropStat } from "../../interfaces";
+import type { DavProperty, DavPropStat } from "../rfc4918/types";
 import { DAV_NAMESPACE, elementChildren } from "../core/xml";
 import {
   DOMParser,

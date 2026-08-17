@@ -1,62 +1,42 @@
-import type {
-  Path,
-  Quota,
-  QuotaProvider,
-  Resource,
-  StorageQuotaProvider,
-} from "../../interfaces";
-import type { DavPropertyExtension } from "../core/properties";
+import type { DavResource } from "../core/resource";
+import type { DavResourceInfo } from "../core/types";
+import type { DavLiveProperty } from "../rfc4918/properties";
+import type { DavPropertyName } from "../rfc4918/types";
 import { DAV_NAMESPACE, createDavProperty } from "../core/xml";
+import type { DavQuotaProvider } from "./types";
 
-export class FileSystemQuotaProvider implements QuotaProvider {
-  constructor(private readonly quota: StorageQuotaProvider) {}
+export const quotaProtectedPropertyNames: readonly DavPropertyName[] = [
+  { namespaceURI: DAV_NAMESPACE, localName: "quota-available-bytes" },
+  { namespaceURI: DAV_NAMESPACE, localName: "quota-used-bytes" },
+];
 
-  async getQuota(collection: Path): Promise<Quota> {
-    const storage = await this.quota.getQuota(collection);
-    return {
-      usedBytes: storage.usedBytes,
-      availableBytes: storage.availableBytes ?? Number.MAX_SAFE_INTEGER,
-    };
-  }
-}
-
-export class DavQuotaProperties implements DavPropertyExtension {
-  constructor(private readonly quota: QuotaProvider) {}
-
-  async liveProperties(path: Path, resource: Resource, include: boolean) {
-    if (!include || resource.kind !== "directory") return [];
-    const value = await this.quota.getQuota(path);
-    if (!value) return [];
-    return [
-      {
-        name: {
-          namespaceURI: DAV_NAMESPACE,
-          localName: "quota-available-bytes",
-        },
-        property: {
-          element: createDavProperty(
-            "quota-available-bytes",
-            String(value.availableBytes),
-          ),
-        },
+export const quotaLiveProperties = async (
+  provider: DavQuotaProvider,
+  resource: DavResource,
+  info: DavResourceInfo,
+  include: boolean,
+): Promise<readonly DavLiveProperty[]> => {
+  if (!include || info.kind !== "collection") return [];
+  const value = await provider(resource.path);
+  if (!value) return [];
+  return [
+    {
+      name: {
+        namespaceURI: DAV_NAMESPACE,
+        localName: "quota-available-bytes",
       },
-      {
-        name: { namespaceURI: DAV_NAMESPACE, localName: "quota-used-bytes" },
-        property: {
-          element: createDavProperty(
-            "quota-used-bytes",
-            String(value.usedBytes),
-          ),
-        },
+      property: {
+        element: createDavProperty(
+          "quota-available-bytes",
+          String(value.availableBytes ?? Number.MAX_SAFE_INTEGER),
+        ),
       },
-    ];
-  }
-
-  isProtected(name: { namespaceURI: string; localName: string }) {
-    return (
-      name.namespaceURI === DAV_NAMESPACE &&
-      (name.localName === "quota-available-bytes" ||
-        name.localName === "quota-used-bytes")
-    );
-  }
-}
+    },
+    {
+      name: { namespaceURI: DAV_NAMESPACE, localName: "quota-used-bytes" },
+      property: {
+        element: createDavProperty("quota-used-bytes", String(value.usedBytes)),
+      },
+    },
+  ];
+};

@@ -1,6 +1,11 @@
-import type { DavEnv } from "../core/types";
+import type { DavEnv } from "../types";
 import { Hono } from "hono";
-import { isValidXml } from "../core/xml";
+import {
+  DAV_NAMESPACE,
+  isValidXml,
+  propertyChildren,
+  propertyName,
+} from "../core/xml";
 import { mkcolResponse, parseMkcol } from "./xml";
 
 export const rfc5689 = new Hono<DavEnv>();
@@ -8,18 +13,66 @@ export const rfc5689 = new Hono<DavEnv>();
 rfc5689.on("MKCOL", "*", async (c) => {
   const path = c.get("path");
   if (path === "/") return c.text("Collection exists", 405);
+  const resource = c.get("dav").resource(path);
   const body = c.req.raw.body ? await c.req.text() : "";
   if (body.trim()) {
     if (!c.req.header("content-type")?.toLowerCase().includes("xml"))
       return c.text("MKCOL body is not supported", 415);
     if (!isValidXml(body)) return c.text("Invalid XML", 400);
-    const result = await c.get("dav").mkcol.mkcol(path, parseMkcol(body));
-    if ("propstats" in result)
-      return c.body(mkcolResponse(result.propstats), 403, {
-        "Content-Type": "application/xml; charset=utf-8",
-      });
-    return c.body(null, 201, { Location: c.req.url, ETag: result.etag });
+    const properties = parseMkcol(body);
+    const hasInvalidResourceType = properties.some((property) => {
+      const { namespaceURI, localName } = propertyName(property.element);
+      return (
+        namespaceURI === DAV_NAMESPACE &&
+        localName === "resourcetype" &&
+        propertyChildren(property).some(
+          (child) =>
+            child.namespaceURI !== DAV_NAMESPACE ||
+            child.localName !== "collection",
+        )
+      );
+    });
+    if (hasInvalidResourceType)
+      return c.body(
+        mkcolResponse(
+          properties.map((property) => ({
+            properties: [property],
+            status: 403,
+          })),
+        ),
+        403,
+        {
+          "Content-Type": "application/xml; charset=utf-8",
+        },
+      );
+    await resource.createCollection();
+    const deadProperties = properties.filter(
+      (property) =>
+        !c
+          .get("dav")
+          .properties.isProtectedName(propertyName(property.element)),
+    );
+    if (deadProperties.length) {
+      const info = await resource.stat();
+      if (!info) return c.text("Resource not found", 404);
+      await c.get("dav").properties.proppatch(
+        resource,
+        deadProperties.map((property) => ({
+          kind: "set" as const,
+          property,
+        })),
+      );
+    }
+    const etag = await resource.etag();
+    return c.body(null, 201, {
+      Location: c.req.url,
+      ...(etag ? { ETag: etag } : {}),
+    });
   }
-  const directory = await c.get("dav").tree.mkdir(path);
-  return c.body(null, 201, { Location: c.req.url, ETag: directory.etag });
+  await resource.createCollection();
+  const etag = await resource.etag();
+  return c.body(null, 201, {
+    Location: c.req.url,
+    ...(etag ? { ETag: etag } : {}),
+  });
 });
