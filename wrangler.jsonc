@@ -21,7 +21,7 @@
         "enabled": false,
       },
     },
-    "CachedWebDav": {
+    "App": {
       "type": "worker",
       "cache": {
         "enabled": true,
