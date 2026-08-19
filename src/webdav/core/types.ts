@@ -1,6 +1,22 @@
 /** A decoded absolute URL path used inside the WebDAV implementation. */
 export type DavPath = string;
 
+/** An XML expanded name: namespace URI plus local name. */
+export interface DavPropertyName {
+  namespaceURI: string;
+  localName: string;
+}
+
+/** A WebDAV property represented by its complete XML element. */
+export interface DavProperty {
+  element: Element;
+}
+
+export type EntityTag = `"${string}"` | `W/"${string}"`;
+
+export type LockScope = "exclusive" | "shared";
+export type LockDepth = "0" | "infinity";
+
 export interface DavByteRange {
   start: number;
   end?: number;

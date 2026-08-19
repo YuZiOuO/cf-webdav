@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { join, relative } from "node:path/posix";
-import type { LockDepth, LockScope } from "../rfc4918/types";
-import type { EntityTag } from "../rfc4918/http";
+import { HTTPException } from "hono/http-exception";
+import { newETag } from "./etag";
+import type { EntityTag, LockDepth, LockScope } from "./types";
 
-interface WebDavProperty {
+export interface WebDavProperty {
   namespaceURI: string;
   localName: string;
   xml: string;
@@ -25,15 +26,31 @@ interface WebDavLockRequest {
   owner?: string;
 }
 
-type WebDavStateError =
+export type WebDavStateErrorCode =
   | "not-found"
   | "parent-not-found"
   | "not-directory"
   | "locked"
   | "precondition-failed";
 
-type WebDavStateResult<T> =
-  { ok: true; value: T } | { ok: false; error: WebDavStateError };
+export type WebDavStateResult<T> =
+  { ok: true; value: T } | { ok: false; error: WebDavStateErrorCode };
+
+export const unwrapState = <T>(result: WebDavStateResult<T>) => {
+  if (result.ok) return result.value;
+  switch (result.error) {
+    case "not-found":
+      throw new HTTPException(404, { message: "Not found" });
+    case "parent-not-found":
+      throw new HTTPException(409, { message: "Parent directory not found" });
+    case "not-directory":
+      throw new HTTPException(405, { message: "Not a directory" });
+    case "locked":
+      throw new HTTPException(423, { message: "Resource is locked" });
+    case "precondition-failed":
+      throw new HTTPException(412, { message: "Precondition failed" });
+  }
+};
 
 interface LockRow {
   token: string;
@@ -96,22 +113,36 @@ export class WebDavState extends DurableObject {
     });
   }
 
-  ensureETag(path: string, create: () => EntityTag) {
+  ensureETags(paths: readonly string[]) {
     return this.transaction(() => {
-      const existing = this.ctx.storage.sql
-        .exec<{ etag: string }>(
-          "SELECT etag FROM dav_etags WHERE resource_path = ?",
+      const etags: Record<string, EntityTag> = {};
+      if (paths.length === 0) return etags;
+
+      for (let offset = 0; offset < paths.length; offset += 100) {
+        const batch = paths.slice(offset, offset + 100);
+        const placeholders = batch.map(() => "?").join(", ");
+        for (const row of this.ctx.storage.sql
+          .exec<{ resource_path: string; etag: string }>(
+            `SELECT resource_path, etag FROM dav_etags
+             WHERE resource_path IN (${placeholders})`,
+            ...batch,
+          )
+          .toArray()) {
+          etags[row.resource_path] = row.etag as EntityTag;
+        }
+      }
+
+      for (const path of paths) {
+        if (etags[path]) continue;
+        const etag = newETag();
+        this.ctx.storage.sql.exec(
+          "INSERT INTO dav_etags (resource_path, etag) VALUES (?, ?)",
           path,
-        )
-        .toArray()[0];
-      if (existing) return existing.etag as EntityTag;
-      const etag = create();
-      this.ctx.storage.sql.exec(
-        "INSERT INTO dav_etags (resource_path, etag) VALUES (?, ?)",
-        path,
-        etag,
-      );
-      return etag;
+          etag,
+        );
+        etags[path] = etag;
+      }
+      return etags;
     });
   }
 
@@ -136,21 +167,31 @@ export class WebDavState extends DurableObject {
     });
   }
 
-  getProperties(path: string) {
-    return this.transaction(() =>
-      this.ctx.storage.sql
-        .exec<PropertyRow>(
-          `SELECT namespace_uri, local_name, value_xml FROM dav_properties
-           WHERE resource_path = ? ORDER BY rowid`,
-          path,
-        )
-        .toArray()
-        .map((row) => ({
-          namespaceURI: row.namespace_uri,
-          localName: row.local_name,
-          xml: row.value_xml,
-        })),
-    );
+  getPropertiesForPaths(paths: readonly string[]) {
+    return this.transaction(() => {
+      const properties: Record<string, WebDavProperty[]> = {};
+      if (paths.length === 0) return properties;
+
+      for (let offset = 0; offset < paths.length; offset += 100) {
+        const batch = paths.slice(offset, offset + 100);
+        const placeholders = batch.map(() => "?").join(", ");
+        for (const row of this.ctx.storage.sql
+          .exec<PropertyRow>(
+            `SELECT resource_path, namespace_uri, local_name, value_xml
+             FROM dav_properties
+             WHERE resource_path IN (${placeholders}) ORDER BY rowid`,
+            ...batch,
+          )
+          .toArray()) {
+          (properties[row.resource_path] ??= []).push({
+            namespaceURI: row.namespace_uri,
+            localName: row.local_name,
+            xml: row.value_xml,
+          });
+        }
+      }
+      return properties;
+    });
   }
 
   patchProperties(

@@ -90,23 +90,30 @@ rfc4918.on("PROPFIND", "*", async (c) => {
     }
   }
   const dav = c.get("dav");
-  const responses = await Promise.all(
-    resources.map(async (item) => {
+  const syncToken =
+    includeSync && info.kind === "collection"
+      ? await dav.sync.getSyncToken(path)
+      : undefined;
+  const propfindItems = await Promise.all(
+    resources.map(async ({ resource: itemResource, info: itemInfo }) => {
       const [quota, sync] = await Promise.all([
-        quotaLiveProperties(dav.quota, item.resource, item.info, includeQuota),
-        includeSync ? dav.sync.liveProperties(item.resource, item.info) : [],
+        quotaLiveProperties(dav.quota, itemResource, itemInfo, includeQuota),
+        includeSync
+          ? dav.sync.liveProperties(itemResource, itemInfo, syncToken)
+          : [],
       ]);
       return {
-        href: toHref(item.resource.path, item.info.kind === "collection"),
-        propstats: await dav.properties.propfind(
-          item.resource,
-          item.info,
-          request,
-          [...quota, ...sync],
-        ),
+        resource: itemResource,
+        info: itemInfo,
+        extraLive: [...quota, ...sync],
       };
     }),
   );
+  const propstats = await dav.properties.propfind(propfindItems, request);
+  const responses = propfindItems.map((item, index) => ({
+    href: toHref(item.resource.path, item.info.kind === "collection"),
+    propstats: propstats[index],
+  }));
   return c.body(multistatus(responses), 207, XML);
 });
 
@@ -129,12 +136,12 @@ rfc4918.on("PROPPATCH", "*", async (c) => {
 rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   const path = c.get("path");
   const resource = c.get("dav").resource(path);
-  const file = await resource.stat();
-  if (!file) return c.text("Not Found", 404);
-  if (file.kind !== "file") return c.text("Resource is a directory", 405);
   const rangeHeader = c.req.header("range");
   let range: { start: number; end?: number } | undefined;
   if (rangeHeader) {
+    const file = await resource.stat();
+    if (!file) return c.text("Not Found", 404);
+    if (file.kind !== "file") return c.text("Resource is a directory", 405);
     const ranges = rangeParser(file.contentLength, rangeHeader);
     if (
       ranges === -1 ||
@@ -148,16 +155,17 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   }
   const content = await resource.readFile(range);
   const etag = await resource.etag();
+  const contentRange = content.range;
+  const status = contentRange ? 206 : 200;
   const headers = new Headers({
     "Accept-Ranges": "bytes",
-    "Cloudflare-CDN-Cache-Control": "public, max-age=60, must-revalidate",
+    "Cache-Control":
+      status === 200 ? "public, max-age=60, must-revalidate" : "no-store",
     ETag: etag,
     "Last-Modified": content.file.lastModified.toUTCString(),
   });
   if (content.file.contentType)
     headers.set("Content-Type", content.file.contentType);
-  const contentRange = content.range;
-  const status = contentRange ? 206 : 200;
   const end = contentRange?.end ?? content.file.contentLength - 1;
   headers.set(
     "Content-Length",

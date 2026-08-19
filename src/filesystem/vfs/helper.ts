@@ -44,11 +44,13 @@ export const deleteReleasedObjects = async (
   objects: ObjectStore,
   objectKeys: readonly string[],
 ) => {
-  for (const key of objectKeys) {
-    try {
-      await objects.delete(key as ObjectKey);
-    } catch (error) {
-      console.error("Unable to delete released object", key, error);
-    }
-  }
+  await Promise.all(
+    objectKeys.map(async (key) => {
+      try {
+        await objects.delete(key as ObjectKey);
+      } catch (error) {
+        console.error("Unable to delete released object", key, error);
+      }
+    }),
+  );
 };

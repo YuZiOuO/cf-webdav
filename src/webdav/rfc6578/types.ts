@@ -36,3 +36,5 @@ export type DavChangeFeed = (
   revision: number,
   level: SyncLevel,
 ) => Promise<DavChangeFeedResult>;
+
+export type DavRevisionProvider = (collection: DavPath) => Promise<number>;

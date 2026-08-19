@@ -9,6 +9,7 @@ import {
 } from "../core/xml";
 import type {
   DavChangeFeed,
+  DavRevisionProvider,
   SyncChange,
   SyncRequest,
   SyncResult,
@@ -26,11 +27,12 @@ export class DavSync {
   constructor(
     private readonly resource: DavResourceFactory,
     private readonly changes: DavChangeFeed,
+    private readonly revision: DavRevisionProvider,
   ) {}
 
   async getSyncToken(collection: DavPath) {
-    const result = await this.changes(collection, 0, "infinite");
-    return `${TOKEN_PREFIX}${result.revision}` as SyncToken;
+    const revision = await this.revision(collection);
+    return `${TOKEN_PREFIX}${revision}` as SyncToken;
   }
 
   async stateTokenMatches(collection: DavPath, token: string) {
@@ -40,10 +42,11 @@ export class DavSync {
   async liveProperties(
     resource: DavResource,
     info: DavResourceInfo,
+    syncToken?: SyncToken,
   ): Promise<readonly DavLiveProperty[]> {
     if (info.kind !== "collection") return [];
     const properties: DavLiveProperty[] = [];
-    const token = await this.getSyncToken(resource.path);
+    const token = syncToken ?? (await this.getSyncToken(resource.path));
     if (token) {
       properties.push({
         name: { namespaceURI: DAV_NAMESPACE, localName: "sync-token" },

@@ -639,6 +639,16 @@ export class FileSystemState extends DurableObject {
     });
   }
 
+  currentRevision(collectionPath: string): StateResult<number> {
+    return this.transaction(() => {
+      const collection = this.resource(collectionPath);
+      if (!collection) return { ok: false, error: "not-found" };
+      if (collection.kind !== "directory")
+        return { ok: false, error: "not-directory" };
+      return { ok: true, value: this.revision() };
+    });
+  }
+
   changesSince(
     collectionPath: string,
     revision: number,

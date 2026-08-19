@@ -5,7 +5,6 @@ export type FileSystemErrorCode =
   | "parent-not-found"
   | "not-directory"
   | "not-file"
-  | "invalid-if"
   | "directory-not-empty"
   | "locked"
   | "precondition-failed"

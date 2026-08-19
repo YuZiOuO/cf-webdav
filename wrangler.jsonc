@@ -6,6 +6,28 @@
   "cache": {
     "enabled": true,
   },
+  "exports": {
+    "FileSystemState": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "WebDavState": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "default": {
+      "type": "worker",
+      "cache": {
+        "enabled": false,
+      },
+    },
+    "CachedWebDav": {
+      "type": "worker",
+      "cache": {
+        "enabled": true,
+      },
+    },
+  },
   "r2_buckets": [
     {
       "binding": "BUCKET",
@@ -24,12 +46,6 @@
       },
     ],
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["FileSystemState", "WebDavState"],
-    },
-  ],
   "observability": {
     "enabled": true,
     "logs": {

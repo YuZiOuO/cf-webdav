@@ -1,7 +1,7 @@
 import { basename } from "node:path/posix";
 import type { DavResource } from "../core/resource";
 import type { DavResourceInfo } from "../core/types";
-import type { WebDavState } from "../core/state";
+import { unwrapState, type WebDavState } from "../core/state";
 import type { DavLocks } from "./locks";
 import type {
   DavPropfindRequest,
@@ -10,7 +10,7 @@ import type {
   DavPropStat,
   DavProppatchInstruction,
 } from "./types";
-import { newETag } from "./http";
+import type { EntityTag } from "./http";
 import {
   appendDavElement,
   createDavProperty,
@@ -24,6 +24,12 @@ import {
 export interface DavLiveProperty {
   name: DavPropertyName;
   property: DavProperty;
+}
+
+interface DavPropfindItem {
+  resource: DavResource;
+  info: DavResourceInfo;
+  extraLive?: readonly DavLiveProperty[];
 }
 
 export const propertyKey = ({ namespaceURI, localName }: DavPropertyName) =>
@@ -54,6 +60,8 @@ export class DavProperties {
   private async coreLiveProperties(
     resource: DavResource,
     info: DavResourceInfo,
+    etag: "fetch" | "name-only" | "omit",
+    etags: Record<string, EntityTag>,
   ): Promise<DavLiveProperty[]> {
     const properties: DavLiveProperty[] = [];
     const add = (localName: string, property: DavProperty) =>
@@ -74,8 +82,18 @@ export class DavProperties {
         info.lastModified.toUTCString(),
       ),
     });
-    const etag = await this.state.ensureETag(resource.path, newETag);
-    add("getetag", { element: createDavProperty("getetag", etag) });
+    switch (etag) {
+      case "fetch": {
+        const value = etags[resource.path];
+        add("getetag", { element: createDavProperty("getetag", value) });
+        break;
+      }
+      case "name-only":
+        add("getetag", { element: createDavProperty("getetag", "") });
+        break;
+      case "omit":
+        break;
+    }
 
     const resourceType = createDavProperty("resourcetype");
     if (info.kind === "collection")
@@ -116,50 +134,84 @@ export class DavProperties {
   }
 
   async propfind(
-    resource: DavResource,
-    info: DavResourceInfo,
+    items: readonly DavPropfindItem[],
     request: DavPropfindRequest,
-    extraLive: readonly DavLiveProperty[] = [],
-  ): Promise<readonly DavPropStat[]> {
-    const available = [
-      ...(await this.coreLiveProperties(resource, info)),
-      ...extraLive,
-    ];
-    for (const stored of await this.state.getProperties(resource.path)) {
-      const property = parseProperty(stored.xml);
-      available.push({ name: propertyName(property.element), property });
+  ): Promise<readonly (readonly DavPropStat[])[]> {
+    const paths = items.map(({ resource }) => resource.path);
+    const [etags, storedProperties] = await Promise.all([
+      this.state.ensureETags(paths),
+      this.state.getPropertiesForPaths(paths),
+    ]);
+
+    let etagMode: "fetch" | "name-only" | "omit";
+    switch (request.kind) {
+      case "propname":
+        etagMode = "name-only";
+        break;
+      case "allprop":
+        etagMode = "fetch";
+        break;
+      case "prop":
+        etagMode = request.names.some(
+          (name) =>
+            propertyKey(name) ===
+            propertyKey({
+              namespaceURI: DAV_NAMESPACE,
+              localName: "getetag",
+            }),
+        )
+          ? "fetch"
+          : "omit";
+        break;
     }
 
-    if (request.kind === "propname") {
-      return [
-        {
-          properties: available.map(({ name }) => ({
-            element: createPropertyElement(name),
-          })),
-          status: 200,
-        },
+    const propfindItem = async ({
+      resource,
+      info,
+      extraLive = [],
+    }: DavPropfindItem): Promise<readonly DavPropStat[]> => {
+      const available = [
+        ...(await this.coreLiveProperties(resource, info, etagMode, etags)),
+        ...extraLive,
       ];
-    }
+      for (const stored of storedProperties[resource.path] ?? []) {
+        const property = parseProperty(stored.xml);
+        available.push({ name: propertyName(property.element), property });
+      }
 
-    const requested =
-      request.kind === "prop"
-        ? request.names
-        : available.map(({ name }) => name).concat(request.include ?? []);
+      if (request.kind === "propname") {
+        return [
+          {
+            properties: available.map(({ name }) => ({
+              element: createPropertyElement(name),
+            })),
+            status: 200,
+          },
+        ];
+      }
 
-    const found: DavProperty[] = [];
-    const missing: DavProperty[] = [];
-    for (const requestedName of requested) {
-      const match = available.find(
-        ({ name }) => propertyKey(name) === propertyKey(requestedName),
-      );
-      (match ? found : missing).push(
-        match?.property ?? { element: createPropertyElement(requestedName) },
-      );
-    }
-    return [
-      ...(found.length ? [{ properties: found, status: 200 }] : []),
-      ...(missing.length ? [{ properties: missing, status: 404 }] : []),
-    ];
+      const requested =
+        request.kind === "prop"
+          ? request.names
+          : available.map(({ name }) => name).concat(request.include ?? []);
+
+      const found: DavProperty[] = [];
+      const missing: DavProperty[] = [];
+      for (const requestedName of requested) {
+        const match = available.find(
+          ({ name }) => propertyKey(name) === propertyKey(requestedName),
+        );
+        (match ? found : missing).push(
+          match?.property ?? { element: createPropertyElement(requestedName) },
+        );
+      }
+      return [
+        ...(found.length ? [{ properties: found, status: 200 }] : []),
+        ...(missing.length ? [{ properties: missing, status: 404 }] : []),
+      ];
+    };
+
+    return Promise.all(items.map(propfindItem));
   }
 
   async proppatch(
@@ -201,8 +253,7 @@ export class DavProperties {
           },
         };
       });
-    const result = await this.state.patchProperties(resource.path, stored);
-    if (!result.ok) throw new Error(result.error);
+    unwrapState(await this.state.patchProperties(resource.path, stored));
     return instructions.map((instruction) => ({
       properties: [instructionProperty(instruction)],
       status: 200,

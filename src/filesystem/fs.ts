@@ -71,6 +71,12 @@ export class ObjectStoreFileSystem implements FileSystem, StorageQuotaProvider {
     return { usedBytes: await this.state.usedBytes(path) };
   }
 
+  async currentRevision(path: Path): Promise<number> {
+    const result = await this.state.currentRevision(path);
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
+  }
+
   async changesSince(path: Path, revision: number, level: "1" | "infinite") {
     const result = await this.state.changesSince(path, revision, level);
     if (!result.ok) throw new Error(result.error);

@@ -1,58 +1,94 @@
 import { basicAuth } from "hono/basic-auth";
 import { Hono } from "hono";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import webdav from "./webdav";
 import browser from "./browser";
 
-const app = new Hono<{ Bindings: CloudflareBindings }>();
-app.use("*", async (c, next) => {
-  c.header("Cache-Control", "no-store");
+type GatewayBindings = CloudflareBindings & {
+  cachedWebDav: Cloudflare.Exports["CachedWebDav"];
+};
+
+const content = new Hono<{ Bindings: CloudflareBindings }>();
+content.use("*", async (c, next) => {
   await next();
+  if (!c.res.headers.has("Cache-Control"))
+    c.res.headers.set("Cache-Control", "no-store");
 });
-app.use("*", (c, next) =>
+content.route("/", browser);
+content.route("/", webdav);
+
+const gateway = new Hono<{ Bindings: GatewayBindings }>();
+gateway.use("*", (c, next) =>
   basicAuth({
     username: c.env.USERNAME,
     password: c.env.PASSWORD,
   })(c, next),
 );
-app.route("/", browser);
-app.route("/", webdav);
+gateway.all("*", async (c) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD") {
+    const headers = new Headers(c.req.raw.headers);
+    headers.delete("Authorization");
+    return c.env.cachedWebDav.fetch(c.req.raw, { headers });
+  }
+
+  const response = await content.fetch(c.req.raw, c.env, c.executionCtx);
+  if (response.ok) {
+    const pathPrefixes = cachePathPrefixes(c.req.raw);
+    if (pathPrefixes) await c.env.cachedWebDav.purge(pathPrefixes);
+  }
+  return response;
+});
+
+const cachePathPrefixes = (request: Request): string[] | undefined => {
+  const path = new URL(request.url).pathname;
+  switch (request.method) {
+    case "PUT":
+    case "DELETE":
+      return [path];
+    case "COPY":
+    case "MOVE": {
+      const destination = request.headers.get("Destination");
+      if (!destination) return undefined;
+      const destinationPath = new URL(destination, request.url).pathname;
+      return request.method === "MOVE"
+        ? [path, destinationPath]
+        : [destinationPath];
+    }
+    default:
+      return undefined;
+  }
+};
 
 export { FileSystemState } from "./filesystem";
 export { WebDavState } from "./webdav";
 
-export default {
-  async fetch(request, env, ctx) {
-    const response = await app.fetch(request, env, ctx);
-    if (!response.ok || !ctx.cache) return response;
+export class CachedWebDav extends WorkerEntrypoint<CloudflareBindings> {
+  async fetch(request: Request): Promise<Response> {
+    return content.fetch(request, this.env, this.ctx);
+  }
 
-    const path = new URL(request.url).pathname;
-    let pathPrefixes: string[] | undefined;
-    switch (request.method) {
-      case "PUT":
-      case "DELETE":
-        pathPrefixes = [path];
-        break;
-      case "COPY":
-      case "MOVE": {
-        const destination = request.headers.get("Destination");
-        if (!destination) return response;
-        const destinationPath = new URL(destination, request.url).pathname;
-        pathPrefixes =
-          request.method === "MOVE"
-            ? [path, destinationPath]
-            : [destinationPath];
-        break;
-      }
-    }
-    if (!pathPrefixes) return response;
+  async purge(pathPrefixes: string[]): Promise<void> {
+    if (!this.ctx.cache) return;
 
     try {
-      const result = await ctx.cache.purge({ pathPrefixes });
+      const result = await this.ctx.cache.purge({ pathPrefixes });
       if (!result.success)
         console.error("Failed to purge Workers Cache", result.errors);
     } catch (error) {
       console.error("Failed to purge Workers Cache", error);
     }
-    return response;
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    return gateway.fetch(
+      request,
+      {
+        ...env,
+        cachedWebDav: ctx.exports.CachedWebDav,
+      },
+      ctx,
+    );
   },
 } satisfies ExportedHandler<CloudflareBindings>;

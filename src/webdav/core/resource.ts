@@ -1,9 +1,10 @@
 import { dirname, join } from "node:path/posix";
 import type { FileSystem, Resource } from "../../interfaces";
 import type { WebDavState } from "./state";
-import { newETag, type EntityTag } from "../rfc4918/http";
+import { newETag } from "./etag";
 import type {
   DavByteRange,
+  EntityTag,
   DavFile,
   DavFileData,
   DavPath,
@@ -48,7 +49,8 @@ export class DavResource {
   }
 
   async etag(): Promise<EntityTag> {
-    return this.state.ensureETag(this.path, newETag);
+    const etags = await this.state.ensureETags([this.path]);
+    return etags[this.path];
   }
 
   async readFile(range?: DavByteRange) {

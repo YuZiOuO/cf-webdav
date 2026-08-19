@@ -1,11 +1,13 @@
 import type { DavIfCondition, DavIfHeader, DavIfList } from "./types";
-import type { DavPath } from "../core/types";
-import { FileSystemError } from "../../filesystem";
+import type { DavPath, EntityTag } from "../core/types";
+import { HTTPException } from "hono/http-exception";
 import { decodePath } from "../../path";
 
-export type EntityTag = `"${string}"` | `W/"${string}"`;
+export type { EntityTag } from "../core/types";
+export { newETag } from "../core/etag";
 
-export const newETag = () => `"${crypto.randomUUID()}"` as EntityTag;
+const invalidIf = () =>
+  new HTTPException(400, { message: "Invalid If header" });
 
 interface IfMatchContext {
   etag?: EntityTag;
@@ -25,8 +27,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     const start = index;
     index += 1;
     while (index < value.length && value[index] !== ">") index += 1;
-    if (index === value.length)
-      throw new FileSystemError("invalid-if", "Invalid If header");
+    if (index === value.length) throw invalidIf();
     const token = value.slice(start + 1, index);
     index += 1;
     return token;
@@ -35,12 +36,10 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     const start = index + 1;
     index += 1;
     while (index < value.length && value[index] !== "]") index += 1;
-    if (index === value.length)
-      throw new FileSystemError("invalid-if", "Invalid If header");
+    if (index === value.length) throw invalidIf();
     const etag = value.slice(start, index);
     index += 1;
-    if (!/^(?:W\/)?"/.test(etag) || !etag.endsWith('"'))
-      throw new FileSystemError("invalid-if", "Invalid If header");
+    if (!/^(?:W\/)?"/.test(etag) || !etag.endsWith('"')) throw invalidIf();
     return etag as EntityTag;
   };
   const parseCondition = (): DavIfCondition => {
@@ -66,12 +65,11 @@ export const parseIfHeader = (header: string): DavIfHeader => {
         etag: parseEtag(),
         ...(not ? { not } : {}),
       };
-    throw new FileSystemError("invalid-if", "Invalid If header");
+    throw invalidIf();
   };
   const parseList = (resource?: DavPath): DavIfList => {
     skipSpace();
-    if (value[index] !== "(")
-      throw new FileSystemError("invalid-if", "Invalid If header");
+    if (value[index] !== "(") throw invalidIf();
     index += 1;
     const conditions: DavIfCondition[] = [];
     while (true) {
@@ -80,12 +78,10 @@ export const parseIfHeader = (header: string): DavIfHeader => {
         index += 1;
         break;
       }
-      if (index >= value.length)
-        throw new FileSystemError("invalid-if", "Invalid If header");
+      if (index >= value.length) throw invalidIf();
       conditions.push(parseCondition());
     }
-    if (!conditions.length)
-      throw new FileSystemError("invalid-if", "Invalid If header");
+    if (!conditions.length) throw invalidIf();
     return { ...(resource ? { resource } : {}), conditions };
   };
   const parseResource = (): DavPath => {
@@ -94,7 +90,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
       const pathname = tag.startsWith("/") ? tag : new URL(tag).pathname;
       return decodePath(pathname);
     } catch {
-      throw new FileSystemError("invalid-if", "Invalid If header");
+      throw invalidIf();
     }
   };
 

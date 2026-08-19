@@ -33,7 +33,6 @@ app.onError((error, c) => {
       "parent-not-found": 409,
       "not-directory": 405,
       "not-file": 405,
-      "invalid-if": 400,
       "directory-not-empty": 409,
       "locked": 423,
       "precondition-failed": 412,
@@ -58,21 +57,29 @@ app.use("*", async (c, next) => {
     ]);
     const resource = (target: DavPath) =>
       new DavResource(target, filesystem, webDavState);
-    const sync = new DavSync(resource, async (collection, revision, level) => {
-      const result = await filesystem.changesSince(collection, revision, level);
-      return {
-        revision: result.revision,
-        changes: result.changes.map((change) =>
-          change.kind === "changed"
-            ? {
-                kind: "changed",
-                path: change.path,
-                resource: toDavResourceInfo(change.resource),
-              }
-            : change,
-        ),
-      };
-    });
+    const sync = new DavSync(
+      resource,
+      async (collection, revision, level) => {
+        const result = await filesystem.changesSince(
+          collection,
+          revision,
+          level,
+        );
+        return {
+          revision: result.revision,
+          changes: result.changes.map((change) =>
+            change.kind === "changed"
+              ? {
+                  kind: "changed",
+                  path: change.path,
+                  resource: toDavResourceInfo(change.resource),
+                }
+              : change,
+          ),
+        };
+      },
+      (collection) => filesystem.currentRevision(collection),
+    );
     c.set("path", path);
     c.set("dav", {
       resource,

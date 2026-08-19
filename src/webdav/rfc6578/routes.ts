@@ -21,23 +21,27 @@ rfc6578.on("REPORT", "*", async (c) => {
     syncLevel: request.syncLevel,
   });
   if ("error" in result) return c.body(null, 412);
-  const responses = await Promise.all(
-    result.changes.map(async (change) =>
-      change.kind === "changed"
-        ? {
-            href: toHref(change.path, change.resource.kind === "collection"),
-            propstats: await dav.properties.propfind(
-              dav.resource(change.path),
-              change.resource,
-              { kind: "prop", names: request.properties },
-            ),
-          }
-        : {
-            href: toHref(change.path),
-            propstats: [],
-            status: 404,
-          },
-    ),
+  const changedItems = result.changes.flatMap((change) =>
+    change.kind === "changed"
+      ? [{ resource: dav.resource(change.path), info: change.resource }]
+      : [],
+  );
+  const changedPropstats = await dav.properties.propfind(changedItems, {
+    kind: "prop",
+    names: request.properties,
+  });
+  let changedIndex = 0;
+  const responses = result.changes.map((change) =>
+    change.kind === "changed"
+      ? {
+          href: toHref(change.path, change.resource.kind === "collection"),
+          propstats: changedPropstats[changedIndex++],
+        }
+      : {
+          href: toHref(change.path),
+          propstats: [],
+          status: 404,
+        },
   );
   return c.body(syncMultistatus(responses, result.syncToken), 207, {
     "Content-Type": "application/xml; charset=utf-8",

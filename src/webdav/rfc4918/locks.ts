@@ -2,13 +2,7 @@ import type { DavPath } from "../core/types";
 import type { Lock, LockRequest, LockToken } from "./types";
 import { parseProperty, serializeProperty } from "../core/xml";
 import type { WebDavLock, WebDavState } from "../core/state";
-
-const unwrapState = <T>(
-  result: { ok: true; value: T } | { ok: false; error: string },
-) => {
-  if (result.ok) return result.value;
-  throw new Error(result.error);
-};
+import { unwrapState } from "../core/state";
 
 const toLock = (lock: WebDavLock): Lock => ({
   token: lock.token as LockToken,
