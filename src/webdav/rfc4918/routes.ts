@@ -1,6 +1,6 @@
 import type { PropfindRequest, LockToken } from "./types";
 import type { Locks } from "./locks";
-import type { Path } from "../core/types";
+import type { FileInfo, Path } from "../core/types";
 import type { Env } from "../types";
 import { Hono } from "hono";
 import rangeParser from "range-parser";
@@ -61,13 +61,13 @@ rfc4918.on("PROPFIND", "*", async (c) => {
     );
   if (depth !== "0" && depth !== "1")
     return c.text("Invalid Depth header", 400);
-  const info = await resource.stat();
-  if (!info) return c.text("Resource not found", 404);
   const body = c.req.raw.body ? await c.req.text() : "";
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
   const request: PropfindRequest = body
     ? parsePropfind(body)
     : { kind: "allprop" };
+  const info = await resource.stat();
+  if (!info) return c.text("Resource not found", 404);
   const requestedPropertyKeys =
     request.kind === "prop"
       ? new Set(request.names.map(propertyKey))
@@ -120,12 +120,12 @@ rfc4918.on("PROPFIND", "*", async (c) => {
 rfc4918.on("PROPPATCH", "*", async (c) => {
   const path = c.get("path");
   const resource = c.get("dav").resource(path);
+  const body = await c.req.text();
+  if (!isValidXml(body)) return c.text("Invalid XML", 400);
   const info = await resource.stat();
   if (!info) return c.text("Not Found", 404);
   if (await isLockedWithoutToken(c.get("dav").locks, path, c.req.header("if")))
     return c.text("Resource is locked", 423);
-  const body = await c.req.text();
-  if (!isValidXml(body)) return c.text("Invalid XML", 400);
   const propstats = await c
     .get("dav")
     .properties.proppatch(resource, parseProppatch(body));
@@ -138,11 +138,13 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
   const resource = c.get("dav").resource(path);
   const rangeHeader = c.req.header("range");
   let range: { start: number; end?: number } | undefined;
+  let fileInfo: FileInfo | undefined;
   if (rangeHeader) {
-    const file = await resource.stat();
-    if (!file) return c.text("Not Found", 404);
-    if (file.kind !== "file") return c.text("Resource is a directory", 405);
-    const ranges = rangeParser(file.contentLength, rangeHeader);
+    const info = await resource.stat();
+    if (!info) return c.text("Not Found", 404);
+    if (info.kind !== "file") return c.text("Resource is a directory", 405);
+    fileInfo = info;
+    const ranges = rangeParser(info.contentLength, rangeHeader);
     if (
       ranges === -1 ||
       ranges === -2 ||
@@ -153,33 +155,51 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
     const [parsed] = ranges;
     range = { start: parsed.start, end: parsed.end };
   }
-  const content = await resource.readFile(range);
+  if (!fileInfo) {
+    if (c.req.method === "HEAD") {
+      const info = await resource.stat();
+      if (!info) return c.text("Not Found", 404);
+      if (info.kind !== "file") return c.text("Resource is a directory", 405);
+      fileInfo = info;
+    }
+  }
+  const content =
+    c.req.method === "HEAD" ? undefined : await resource.readFile(range);
+  const file = fileInfo ?? content!.file;
   const etag = await resource.etag();
-  const contentRange = content.range;
+  const contentRange =
+    content?.range ??
+    (range
+      ? {
+          start: range.start,
+          end: Math.min(
+            range.end ?? file.contentLength - 1,
+            file.contentLength - 1,
+          ),
+        }
+      : undefined);
   const status = contentRange ? 206 : 200;
   const headers = new Headers({
     "Accept-Ranges": "bytes",
     "Cache-Control":
       status === 200 ? "public, max-age=60, must-revalidate" : "no-store",
     ETag: etag,
-    "Last-Modified": content.file.lastModified.toUTCString(),
+    "Last-Modified": file.lastModified.toUTCString(),
   });
-  if (content.file.contentType)
-    headers.set("Content-Type", content.file.contentType);
-  const end = contentRange?.end ?? content.file.contentLength - 1;
+  if (file.contentType) headers.set("Content-Type", file.contentType);
+  const end = contentRange?.end ?? file.contentLength - 1;
   headers.set(
     "Content-Length",
-    String(
-      contentRange ? end - contentRange.start + 1 : content.file.contentLength,
-    ),
+    String(contentRange ? end - contentRange.start + 1 : file.contentLength),
   );
   if (contentRange)
     headers.set(
       "Content-Range",
-      `bytes ${contentRange.start}-${end}/${content.file.contentLength}`,
+      `bytes ${contentRange.start}-${end}/${file.contentLength}`,
     );
-  if (c.req.method === "HEAD") return c.body(null, { status, headers });
-  return c.body(content.body, { status, headers });
+  return c.req.method === "HEAD"
+    ? c.body(null, { status, headers })
+    : c.body(content!.body, { status, headers });
 });
 
 rfc4918.put("*", async (c) => {
@@ -211,9 +231,12 @@ rfc4918.put("*", async (c) => {
         async (target) => {
           const targetResource = dav.resource(target);
           const targetInfo = await targetResource.stat();
-          const targetLocks = await dav.locks.getLocks(target);
+          const [targetLocks, etag] = await Promise.all([
+            dav.locks.getLocks(target),
+            targetInfo ? targetResource.etag() : undefined,
+          ]);
           return {
-            etag: targetInfo ? await targetResource.etag() : undefined,
+            etag,
             lockTokens: new Set(targetLocks.map((lock) => lock.token)),
           };
         },
@@ -311,7 +334,6 @@ rfc4918.on("LOCK", "*", async (c) => {
   const path = c.get("path");
   const dav = c.get("dav");
   const resource = dav.resource(path);
-  const existing = await resource.stat();
   const timeoutHeader =
     c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
   let seconds: number | undefined;
@@ -327,6 +349,7 @@ rfc4918.on("LOCK", "*", async (c) => {
   const body = c.req.raw.body ? await c.req.text() : "";
   if (!body && !token) return c.text("Lock body is required", 400);
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
+  const existing = await resource.stat();
   if (!token && !existing) {
     const parent = resource.parent();
     const parentInfo = parent ? await parent.stat() : undefined;

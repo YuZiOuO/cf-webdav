@@ -104,8 +104,7 @@ export class Sync {
       const info = await resource.stat();
       if (info) await visit(resource, info, true);
       changes = currentChanges;
-      nextRevision = (await this.changes(collection, 0, request.syncLevel))
-        .revision;
+      nextRevision = await this.revision(collection);
     } else {
       const result = await this.changes(
         collection,

@@ -24,8 +24,7 @@ export interface PropStat {
 }
 
 export type ProppatchInstruction =
-  | { kind: "set"; property: Property }
-  | { kind: "remove"; name: PropertyName };
+  { kind: "set"; property: Property } | { kind: "remove"; name: PropertyName };
 
 export type IfCondition =
   | { kind: "state-token"; token: string; not?: boolean }

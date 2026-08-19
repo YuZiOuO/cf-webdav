@@ -138,11 +138,6 @@ export class Properties {
     request: PropfindRequest,
   ): Promise<readonly (readonly PropStat[])[]> {
     const paths = items.map(({ resource }) => resource.path);
-    const [etags, storedProperties] = await Promise.all([
-      this.state.ensureETags(paths),
-      this.state.getPropertiesForPaths(paths),
-    ]);
-
     let etagMode: "fetch" | "name-only" | "omit";
     switch (request.kind) {
       case "propname":
@@ -164,6 +159,10 @@ export class Properties {
           : "omit";
         break;
     }
+    const [etags, storedProperties] = await Promise.all([
+      etagMode === "fetch" ? this.state.ensureETags(paths) : {},
+      this.state.getPropertiesForPaths(paths),
+    ]);
 
     const propfindItem = ({
       resource,

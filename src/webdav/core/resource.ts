@@ -1,5 +1,8 @@
 import { dirname, join } from "node:path/posix";
-import type { FileSystem, Resource as FileSystemResource } from "../../interfaces";
+import type {
+  FileSystem,
+  Resource as FileSystemResource,
+} from "../../interfaces";
 import type { WebDavState } from "./state";
 import { newETag } from "./etag";
 import type {
