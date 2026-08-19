@@ -34,7 +34,8 @@ export type StateErrorCode =
   | "precondition-failed";
 
 export type StateResult<T> =
-  { ok: true; value: T } | { ok: false; error: StateErrorCode };
+  | { ok: true; value: T }
+  | { ok: false; error: StateErrorCode };
 
 export const unwrapState = <T>(result: StateResult<T>) => {
   if (result.ok) return result.value;

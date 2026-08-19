@@ -29,18 +29,12 @@ export interface FileInfo {
   contentType?: string;
 }
 
-export interface CollectionInfo {
-  kind: "collection";
-  lastModified: Date;
-}
-
-export type ResourceInfo = FileInfo | CollectionInfo;
-
-export interface FileContent {
-  file: FileInfo;
-  body: ReadableStream<Uint8Array>;
-  range?: ByteRange;
-}
+export type ResourceInfo =
+  | FileInfo
+  | {
+      kind: "collection";
+      lastModified: Date;
+    };
 
 export interface FileData {
   body: ReadableStream<Uint8Array>;

@@ -26,15 +26,13 @@ export type SyncResult =
     }
   | { error: "valid-sync-token" | "number-of-matches-within-limits" };
 
-export interface ChangeFeedResult {
-  revision: number;
-  changes: readonly SyncChange[];
-}
-
 export type ChangeFeed = (
   collection: Path,
   revision: number,
   level: SyncLevel,
-) => Promise<ChangeFeedResult>;
+) => Promise<{
+  revision: number;
+  changes: readonly SyncChange[];
+}>;
 
 export type RevisionProvider = (collection: Path) => Promise<number>;

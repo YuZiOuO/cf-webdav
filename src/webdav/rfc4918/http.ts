@@ -3,9 +3,6 @@ import type { Path, EntityTag } from "../core/types";
 import { HTTPException } from "hono/http-exception";
 import { decodePath } from "../../path";
 
-export type { EntityTag } from "../core/types";
-export { newETag } from "../core/etag";
-
 const invalidIf = () =>
   new HTTPException(400, { message: "Invalid If header" });
 

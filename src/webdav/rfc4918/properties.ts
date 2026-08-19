@@ -10,7 +10,7 @@ import type {
   PropStat,
   ProppatchInstruction,
 } from "./types";
-import type { EntityTag } from "./http";
+import type { EntityTag } from "../core/types";
 import {
   appendDavElement,
   createDavProperty,
@@ -35,7 +35,7 @@ interface PropfindItem {
 export const propertyKey = ({ namespaceURI, localName }: PropertyName) =>
   `${namespaceURI}\0${localName}`;
 
-export const protectedPropertyNames = new Set(
+const protectedPropertyNames = new Set(
   [
     "getetag",
     "getcontentlength",
@@ -57,12 +57,12 @@ export class Properties {
     private readonly extraProtected: readonly PropertyName[] = [],
   ) {}
 
-  private async coreLiveProperties(
+  private coreLiveProperties(
     resource: Resource,
     info: ResourceInfo,
     etag: "fetch" | "name-only" | "omit",
     etags: Record<string, EntityTag>,
-  ): Promise<LiveProperty[]> {
+  ): LiveProperty[] {
     const properties: LiveProperty[] = [];
     const add = (localName: string, property: Property) =>
       properties.push({
@@ -100,7 +100,7 @@ export class Properties {
       appendDavElement(resourceType, "collection");
     add("resourcetype", { element: resourceType });
     const supportedLock = createDavProperty("supportedlock");
-    for (const scope of await this.locks.getSupportedLockScopes()) {
+    for (const scope of ["exclusive", "shared"] as const) {
       const entry = appendDavElement(supportedLock, "lockentry");
       const scopeElement = appendDavElement(entry, "lockscope");
       appendDavElement(scopeElement, scope);
@@ -165,13 +165,13 @@ export class Properties {
         break;
     }
 
-    const propfindItem = async ({
+    const propfindItem = ({
       resource,
       info,
       extraLive = [],
-    }: PropfindItem): Promise<readonly PropStat[]> => {
+    }: PropfindItem): readonly PropStat[] => {
       const available = [
-        ...(await this.coreLiveProperties(resource, info, etagMode, etags)),
+        ...this.coreLiveProperties(resource, info, etagMode, etags),
         ...extraLive,
       ];
       for (const stored of storedProperties[resource.path] ?? []) {
@@ -211,7 +211,7 @@ export class Properties {
       ];
     };
 
-    return Promise.all(items.map(propfindItem));
+    return items.map(propfindItem);
   }
 
   async proppatch(

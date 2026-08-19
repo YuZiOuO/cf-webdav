@@ -39,20 +39,18 @@ export interface IfList {
 export type IfHeader = readonly IfList[];
 
 export type LockToken = string & { readonly __lockToken: unique symbol };
-export type LockTimeout = number | "infinite";
-
 export interface Lock {
   token: LockToken;
   root: Path;
   scope: LockScope;
   depth: LockDepth;
-  timeout?: LockTimeout;
+  timeout?: number | "infinite";
   owner?: Element;
 }
 
 export interface LockRequest {
   scope: LockScope;
   depth: LockDepth;
-  timeout?: LockTimeout;
+  timeout?: number | "infinite";
   owner?: Element;
 }

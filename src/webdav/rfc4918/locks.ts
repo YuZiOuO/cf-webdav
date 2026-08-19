@@ -16,10 +16,6 @@ const toLock = (lock: StoredLock): Lock => ({
 export class Locks {
   constructor(private readonly state: DurableObjectStub<WebDavState>) {}
 
-  getSupportedLockScopes() {
-    return Promise.resolve(["exclusive", "shared"] as const);
-  }
-
   async getLocks(path: Path) {
     return (await this.state.getLocks(path)).map(toLock);
   }
