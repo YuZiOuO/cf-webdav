@@ -26,7 +26,7 @@ export const writeFile = async (
     throw new FileSystemError("already-exists", "Directory already exists");
 
   const id = (existing?.id as ResourceId | undefined) ?? resourceId();
-  const key = objectKey(id);
+  const key = objectKey();
   const stored = await deps.objects.put(key, data);
 
   let written: { resource: StoredFile; releasedObjectKeys: string[] };

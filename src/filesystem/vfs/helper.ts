@@ -13,8 +13,7 @@ export interface FileSystemDependencies {
 }
 
 // Object content helpers used when bridging metadata and object storage.
-export const objectKey = (id: ResourceId) =>
-  `resources/${id}/${crypto.randomUUID()}` as ObjectKey;
+export const objectKey = () => crypto.randomUUID() as ObjectKey;
 
 export const resourceId = () => crypto.randomUUID() as ResourceId;
 
