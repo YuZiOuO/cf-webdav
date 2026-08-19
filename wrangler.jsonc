@@ -3,6 +3,31 @@
   "name": "cf-webdav",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-27",
+  "cache": {
+    "enabled": true,
+  },
+  "exports": {
+    "FileSystemState": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "WebDavState": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "default": {
+      "type": "worker",
+      "cache": {
+        "enabled": false,
+      },
+    },
+    "App": {
+      "type": "worker",
+      "cache": {
+        "enabled": true,
+      },
+    },
+  },
   "r2_buckets": [
     {
       "binding": "BUCKET",
@@ -15,14 +40,12 @@
         "name": "FileSystemState",
         "class_name": "FileSystemState",
       },
+      {
+        "name": "WebDavState",
+        "class_name": "WebDavState",
+      },
     ],
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["FileSystemState"],
-    },
-  ],
   "observability": {
     "enabled": true,
     "logs": {

@@ -37,15 +37,15 @@ bunx wrangler r2 bucket create webdav
 bun run deploy
 
 # Set the WebDAV username and password interactively
-bunx wrangler secret put WEBDAV_USERNAME
-bunx wrangler secret put WEBDAV_PASSWORD
+bunx wrangler secret put USERNAME
+bunx wrangler secret put PASSWORD
 ```
 
 For local development, set these variables in `.dev.vars`:
 
 ```text
-WEBDAV_USERNAME=your-username
-WEBDAV_PASSWORD=your-password
+USERNAME=your-username
+PASSWORD=your-password
 ```
 
 ## Consistency Assumptions

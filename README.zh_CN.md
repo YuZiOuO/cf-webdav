@@ -33,15 +33,15 @@ bun run deploy # 命令会输出 Worker 的 HTTPS 地址。
 
 # 交互式地设定 WebDAV 用户名与密码
 # 执行后马上生效
-bunx wrangler secret put WEBDAV_USERNAME
-bunx wrangler secret put WEBDAV_PASSWORD
+bunx wrangler secret put USERNAME
+bunx wrangler secret put PASSWORD
 ```
 
 本地开发时，变量从 `.dev.vars` 中读取：
 
 ```text
-WEBDAV_USERNAME=your-username
-WEBDAV_PASSWORD=your-password
+USERNAME=your-username
+PASSWORD=your-password
 ```
 
 ## 一致性假设
