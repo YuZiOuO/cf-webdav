@@ -1,8 +1,8 @@
-import type { DavPath } from "../core/types";
+import type { Path } from "../core/types";
 
 export interface Quota {
   usedBytes: number;
   availableBytes?: number;
 }
 
-export type DavQuotaProvider = (path: DavPath) => Promise<Quota | undefined>;
+export type QuotaProvider = (path: Path) => Promise<Quota | undefined>;

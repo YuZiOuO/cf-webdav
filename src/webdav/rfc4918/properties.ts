@@ -1,14 +1,14 @@
 import { basename } from "node:path/posix";
-import type { DavResource } from "../core/resource";
-import type { DavResourceInfo } from "../core/types";
+import type { Resource } from "../core/resource";
+import type { ResourceInfo } from "../core/types";
 import { unwrapState, type WebDavState } from "../core/state";
-import type { DavLocks } from "./locks";
+import type { Locks } from "./locks";
 import type {
-  DavPropfindRequest,
-  DavProperty,
-  DavPropertyName,
-  DavPropStat,
-  DavProppatchInstruction,
+  PropfindRequest,
+  Property,
+  PropertyName,
+  PropStat,
+  ProppatchInstruction,
 } from "./types";
 import type { EntityTag } from "./http";
 import {
@@ -21,18 +21,18 @@ import {
   DAV_NAMESPACE,
 } from "../core/xml";
 
-export interface DavLiveProperty {
-  name: DavPropertyName;
-  property: DavProperty;
+export interface LiveProperty {
+  name: PropertyName;
+  property: Property;
 }
 
-interface DavPropfindItem {
-  resource: DavResource;
-  info: DavResourceInfo;
-  extraLive?: readonly DavLiveProperty[];
+interface PropfindItem {
+  resource: Resource;
+  info: ResourceInfo;
+  extraLive?: readonly LiveProperty[];
 }
 
-export const propertyKey = ({ namespaceURI, localName }: DavPropertyName) =>
+export const propertyKey = ({ namespaceURI, localName }: PropertyName) =>
   `${namespaceURI}\0${localName}`;
 
 export const protectedPropertyNames = new Set(
@@ -45,26 +45,26 @@ export const protectedPropertyNames = new Set(
   ].map((localName) => propertyKey({ namespaceURI: DAV_NAMESPACE, localName })),
 );
 
-const instructionProperty = (instruction: DavProppatchInstruction) =>
+const instructionProperty = (instruction: ProppatchInstruction) =>
   instruction.kind === "set"
     ? instruction.property
     : { element: createPropertyElement(instruction.name) };
 
-export class DavProperties {
+export class Properties {
   constructor(
     private readonly state: DurableObjectStub<WebDavState>,
-    private readonly locks: DavLocks,
-    private readonly extraProtected: readonly DavPropertyName[] = [],
+    private readonly locks: Locks,
+    private readonly extraProtected: readonly PropertyName[] = [],
   ) {}
 
   private async coreLiveProperties(
-    resource: DavResource,
-    info: DavResourceInfo,
+    resource: Resource,
+    info: ResourceInfo,
     etag: "fetch" | "name-only" | "omit",
     etags: Record<string, EntityTag>,
-  ): Promise<DavLiveProperty[]> {
-    const properties: DavLiveProperty[] = [];
-    const add = (localName: string, property: DavProperty) =>
+  ): Promise<LiveProperty[]> {
+    const properties: LiveProperty[] = [];
+    const add = (localName: string, property: Property) =>
       properties.push({
         name: { namespaceURI: DAV_NAMESPACE, localName },
         property,
@@ -124,7 +124,7 @@ export class DavProperties {
     return properties;
   }
 
-  isProtectedName(name: DavPropertyName) {
+  isProtectedName(name: PropertyName) {
     return (
       protectedPropertyNames.has(propertyKey(name)) ||
       this.extraProtected.some(
@@ -134,9 +134,9 @@ export class DavProperties {
   }
 
   async propfind(
-    items: readonly DavPropfindItem[],
-    request: DavPropfindRequest,
-  ): Promise<readonly (readonly DavPropStat[])[]> {
+    items: readonly PropfindItem[],
+    request: PropfindRequest,
+  ): Promise<readonly (readonly PropStat[])[]> {
     const paths = items.map(({ resource }) => resource.path);
     const [etags, storedProperties] = await Promise.all([
       this.state.ensureETags(paths),
@@ -169,7 +169,7 @@ export class DavProperties {
       resource,
       info,
       extraLive = [],
-    }: DavPropfindItem): Promise<readonly DavPropStat[]> => {
+    }: PropfindItem): Promise<readonly PropStat[]> => {
       const available = [
         ...(await this.coreLiveProperties(resource, info, etagMode, etags)),
         ...extraLive,
@@ -195,8 +195,8 @@ export class DavProperties {
           ? request.names
           : available.map(({ name }) => name).concat(request.include ?? []);
 
-      const found: DavProperty[] = [];
-      const missing: DavProperty[] = [];
+      const found: Property[] = [];
+      const missing: Property[] = [];
       for (const requestedName of requested) {
         const match = available.find(
           ({ name }) => propertyKey(name) === propertyKey(requestedName),
@@ -215,10 +215,10 @@ export class DavProperties {
   }
 
   async proppatch(
-    resource: DavResource,
-    instructions: readonly DavProppatchInstruction[],
-  ): Promise<readonly DavPropStat[]> {
-    const isProtected = (instruction: DavProppatchInstruction) => {
+    resource: Resource,
+    instructions: readonly ProppatchInstruction[],
+  ): Promise<readonly PropStat[]> {
+    const isProtected = (instruction: ProppatchInstruction) => {
       const name =
         instruction.kind === "set"
           ? propertyName(instruction.property.element)

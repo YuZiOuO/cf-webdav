@@ -1,11 +1,11 @@
 import type { SyncToken } from "./types";
-import type { DavEnv } from "../types";
+import type { Env } from "../types";
 import { Hono } from "hono";
 import { toHref } from "../../path";
 import { isValidXml } from "../core/xml";
 import { parseSyncCollection, syncMultistatus } from "./xml";
 
-export const rfc6578 = new Hono<DavEnv>();
+export const rfc6578 = new Hono<Env>();
 
 rfc6578.on("REPORT", "*", async (c) => {
   const path = c.get("path");

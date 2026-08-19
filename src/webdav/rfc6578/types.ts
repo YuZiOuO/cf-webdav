@@ -1,4 +1,4 @@
-import type { DavPath, DavResourceInfo } from "../core/types";
+import type { Path, ResourceInfo } from "../core/types";
 
 export type SyncToken = string & { readonly __syncToken: unique symbol };
 export type SyncLevel = "1" | "infinite";
@@ -10,11 +10,11 @@ export interface SyncRequest {
 }
 
 export type SyncChange =
-  | { kind: "changed"; path: DavPath; resource: DavResourceInfo }
-  | { kind: "removed"; path: DavPath }
+  | { kind: "changed"; path: Path; resource: ResourceInfo }
+  | { kind: "removed"; path: Path }
   | {
       kind: "not-supported";
-      path: DavPath;
+      path: Path;
       error: "supported-report" | "sync-traversal-supported";
     };
 
@@ -26,15 +26,15 @@ export type SyncResult =
     }
   | { error: "valid-sync-token" | "number-of-matches-within-limits" };
 
-export interface DavChangeFeedResult {
+export interface ChangeFeedResult {
   revision: number;
   changes: readonly SyncChange[];
 }
 
-export type DavChangeFeed = (
-  collection: DavPath,
+export type ChangeFeed = (
+  collection: Path,
   revision: number,
   level: SyncLevel,
-) => Promise<DavChangeFeedResult>;
+) => Promise<ChangeFeedResult>;
 
-export type DavRevisionProvider = (collection: DavPath) => Promise<number>;
+export type RevisionProvider = (collection: Path) => Promise<number>;

@@ -1,17 +1,17 @@
 import { dirname, join } from "node:path/posix";
-import type { FileSystem, Resource } from "../../interfaces";
+import type { FileSystem, Resource as FileSystemResource } from "../../interfaces";
 import type { WebDavState } from "./state";
 import { newETag } from "./etag";
 import type {
-  DavByteRange,
+  ByteRange,
   EntityTag,
-  DavFile,
-  DavFileData,
-  DavPath,
-  DavResourceInfo,
+  FileInfo,
+  FileData,
+  Path,
+  ResourceInfo,
 } from "./types";
 
-export const toDavResourceInfo = (resource: Resource): DavResourceInfo =>
+export const toResourceInfo = (resource: FileSystemResource): ResourceInfo =>
   resource.kind === "file"
     ? {
         kind: "file",
@@ -24,28 +24,28 @@ export const toDavResourceInfo = (resource: Resource): DavResourceInfo =>
         lastModified: resource.lastModified,
       };
 
-export type DavResourceFactory = (path: DavPath) => DavResource;
+export type ResourceFactory = (path: Path) => Resource;
 
 /** A path-bound WebDAV resource. */
-export class DavResource {
+export class Resource {
   constructor(
-    readonly path: DavPath,
+    readonly path: Path,
     private readonly filesystem: FileSystem,
     private readonly state: DurableObjectStub<WebDavState>,
   ) {}
 
-  resolve(path: DavPath) {
-    return new DavResource(path, this.filesystem, this.state);
+  resolve(path: Path) {
+    return new Resource(path, this.filesystem, this.state);
   }
 
-  parent(): DavResource | undefined {
+  parent(): Resource | undefined {
     if (this.path === "/") return undefined;
     return this.resolve(dirname(this.path) || "/");
   }
 
-  async stat(): Promise<DavResourceInfo | undefined> {
+  async stat(): Promise<ResourceInfo | undefined> {
     const resource = await this.filesystem.stat(this.path);
-    return resource ? toDavResourceInfo(resource) : undefined;
+    return resource ? toResourceInfo(resource) : undefined;
   }
 
   async etag(): Promise<EntityTag> {
@@ -53,7 +53,7 @@ export class DavResource {
     return etags[this.path];
   }
 
-  async readFile(range?: DavByteRange) {
+  async readFile(range?: ByteRange) {
     const {
       file,
       body,
@@ -63,25 +63,25 @@ export class DavResource {
       range ? { range } : undefined,
     );
     return {
-      file: toDavResourceInfo(file) as DavFile,
+      file: toResourceInfo(file) as FileInfo,
       body,
       ...(readRange ? { range: readRange } : {}),
     };
   }
 
   async *children(): AsyncIterable<{
-    resource: DavResource;
-    info: DavResourceInfo;
+    resource: Resource;
+    info: ResourceInfo;
   }> {
     for await (const member of this.filesystem.readdir(this.path)) {
       yield {
         resource: this.resolve(join(this.path, member.name)),
-        info: toDavResourceInfo(member.resource),
+        info: toResourceInfo(member.resource),
       };
     }
   }
 
-  async writeFile(data: DavFileData): Promise<EntityTag> {
+  async writeFile(data: FileData): Promise<EntityTag> {
     await this.filesystem.writeFile(this.path, {
       body: data.body,
       size: data.contentLength,
@@ -106,9 +106,9 @@ export class DavResource {
   }
 
   async copyTo(
-    destination: DavResource,
+    destination: Resource,
     options: { depth: "0" | "infinity"; overwrite: boolean },
-  ): Promise<DavResourceInfo> {
+  ): Promise<ResourceInfo> {
     const recursive = options.depth === "infinity";
     const resource = await this.filesystem.copy(this.path, destination.path, {
       recursive,
@@ -118,13 +118,13 @@ export class DavResource {
     await this.state.removeETags(destination.path, options.overwrite);
     await this.state.copyProperties(this.path, destination.path, recursive);
     await this.state.setETag(destination.path, newETag());
-    return toDavResourceInfo(resource);
+    return toResourceInfo(resource);
   }
 
   async moveTo(
-    destination: DavResource,
+    destination: Resource,
     overwrite: boolean,
-  ): Promise<DavResourceInfo> {
+  ): Promise<ResourceInfo> {
     const resource = await this.filesystem.move(this.path, destination.path, {
       overwrite,
     });
@@ -133,6 +133,6 @@ export class DavResource {
     await this.state.moveProperties(this.path, destination.path);
     await this.state.removeETags(this.path, true);
     await this.state.setETag(destination.path, newETag());
-    return toDavResourceInfo(resource);
+    return toResourceInfo(resource);
   }
 }

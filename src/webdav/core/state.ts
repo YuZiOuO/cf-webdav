@@ -4,13 +4,13 @@ import { HTTPException } from "hono/http-exception";
 import { newETag } from "./etag";
 import type { EntityTag, LockDepth, LockScope } from "./types";
 
-export interface WebDavProperty {
+export interface StoredProperty {
   namespaceURI: string;
   localName: string;
   xml: string;
 }
 
-export interface WebDavLock {
+export interface StoredLock {
   token: string;
   root: string;
   scope: LockScope;
@@ -19,24 +19,24 @@ export interface WebDavLock {
   owner?: string;
 }
 
-interface WebDavLockRequest {
+interface StoredLockRequest {
   scope: LockScope;
   depth: LockDepth;
   timeout?: number;
   owner?: string;
 }
 
-export type WebDavStateErrorCode =
+export type StateErrorCode =
   | "not-found"
   | "parent-not-found"
   | "not-directory"
   | "locked"
   | "precondition-failed";
 
-export type WebDavStateResult<T> =
-  { ok: true; value: T } | { ok: false; error: WebDavStateErrorCode };
+export type StateResult<T> =
+  { ok: true; value: T } | { ok: false; error: StateErrorCode };
 
-export const unwrapState = <T>(result: WebDavStateResult<T>) => {
+export const unwrapState = <T>(result: StateResult<T>) => {
   if (result.ok) return result.value;
   switch (result.error) {
     case "not-found":
@@ -169,7 +169,7 @@ export class WebDavState extends DurableObject {
 
   getPropertiesForPaths(paths: readonly string[]) {
     return this.transaction(() => {
-      const properties: Record<string, WebDavProperty[]> = {};
+      const properties: Record<string, StoredProperty[]> = {};
       if (paths.length === 0) return properties;
 
       for (let offset = 0; offset < paths.length; offset += 100) {
@@ -197,13 +197,13 @@ export class WebDavState extends DurableObject {
   patchProperties(
     path: string,
     instructions: readonly (
-      | { kind: "set"; property: WebDavProperty }
+      | { kind: "set"; property: StoredProperty }
       | {
           kind: "remove";
-          name: Pick<WebDavProperty, "namespaceURI" | "localName">;
+          name: Pick<StoredProperty, "namespaceURI" | "localName">;
         }
     )[],
-  ): WebDavStateResult<void> {
+  ): StateResult<void> {
     return this.transaction(() => {
       for (const instruction of instructions) {
         const name =
@@ -346,8 +346,8 @@ export class WebDavState extends DurableObject {
 
   createLock(
     path: string,
-    request: WebDavLockRequest,
-  ): WebDavStateResult<WebDavLock> {
+    request: StoredLockRequest,
+  ): StateResult<StoredLock> {
     return this.transaction(() => {
       const now = Date.now();
       const conflict = this.activeLocks(now).some((lock) => {
@@ -393,7 +393,7 @@ export class WebDavState extends DurableObject {
     path: string,
     token: string,
     timeout?: number,
-  ): WebDavStateResult<WebDavLock> {
+  ): StateResult<StoredLock> {
     return this.transaction(() => {
       const lock = this.activeLocks(Date.now()).find((candidate) => {
         const descendant = relative(candidate.root, path);
@@ -425,7 +425,7 @@ export class WebDavState extends DurableObject {
     });
   }
 
-  unlock(path: string, token: string): WebDavStateResult<void> {
+  unlock(path: string, token: string): StateResult<void> {
     return this.transaction(() => {
       const lock = this.activeLocks(Date.now()).find((candidate) => {
         const descendant = relative(candidate.root, path);

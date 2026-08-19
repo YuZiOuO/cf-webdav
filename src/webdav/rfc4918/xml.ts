@@ -5,9 +5,9 @@ import {
   type Element as XmlElement,
 } from "@xmldom/xmldom";
 import type {
-  DavPropfindRequest,
-  DavProppatchInstruction,
-  DavPropStat,
+  PropfindRequest,
+  ProppatchInstruction,
+  PropStat,
   Lock,
   LockScope,
 } from "./types";
@@ -19,13 +19,13 @@ import {
   propertyName,
 } from "../core/xml";
 
-type DavElement = Element;
+type DomElement = Element;
 
 const serializer = new XMLSerializer();
 
-const xmlElement = (element: DavElement) => element as unknown as XmlElement;
+const xmlElement = (element: DomElement) => element as unknown as XmlElement;
 
-const davElement = (element: XmlElement) => element as unknown as DavElement;
+const davElement = (element: XmlElement) => element as unknown as DomElement;
 
 const child = (parent: XmlElement, namespace: string, name: string) =>
   elementChildren(parent).find(
@@ -67,7 +67,7 @@ const appendStatus = (parent: XmlElement, status: number) =>
     `HTTP/1.1 ${status} ${statusText[status] ?? ""}`.trim(),
   );
 
-const appendPropstat = (parent: XmlElement, propstat: DavPropStat) => {
+const appendPropstat = (parent: XmlElement, propstat: PropStat) => {
   const propstatElement = xmlElement(
     appendDavElement(davElement(parent), "propstat"),
   );
@@ -103,7 +103,7 @@ const appendActiveLock = (parent: XmlElement, lock: Lock) => {
   appendDavElement(davElement(token), "href", lock.token);
 };
 
-export const parsePropfind = (xml: string): DavPropfindRequest => {
+export const parsePropfind = (xml: string): PropfindRequest => {
   const root = parseRoot(xml);
   const prop = child(root, DAV_NAMESPACE, "prop");
   if (prop)
@@ -127,8 +127,8 @@ export const parsePropfind = (xml: string): DavPropfindRequest => {
   };
 };
 
-export const parseProppatch = (xml: string): DavProppatchInstruction[] => {
-  const instructions: DavProppatchInstruction[] = [];
+export const parseProppatch = (xml: string): ProppatchInstruction[] => {
+  const instructions: ProppatchInstruction[] = [];
   for (const operation of elementChildren(parseRoot(xml))) {
     const kind = elementLocalName(operation);
     if (
@@ -150,7 +150,7 @@ export const parseProppatch = (xml: string): DavProppatchInstruction[] => {
 
 export const parseLockInfo = (
   xml: string,
-): { scope: LockScope; owner?: DavElement } => {
+): { scope: LockScope; owner?: DomElement } => {
   const root = parseRoot(xml);
   const lockScope = child(root, DAV_NAMESPACE, "lockscope");
   const owner = child(root, DAV_NAMESPACE, "owner");
@@ -163,13 +163,13 @@ export const parseLockInfo = (
   };
 };
 
-interface DavResponse {
+interface ResponseItem {
   href: string;
-  propstats: readonly DavPropStat[];
+  propstats: readonly PropStat[];
   status?: number;
 }
 
-export const multistatus = (responses: readonly DavResponse[]) => {
+export const multistatus = (responses: readonly ResponseItem[]) => {
   const { document, root } = documentRoot("multistatus");
   for (const response of responses) {
     const element = xmlElement(appendDavElement(davElement(root), "response"));

@@ -1,21 +1,21 @@
-import type { DavResource } from "../core/resource";
-import type { DavResourceInfo } from "../core/types";
-import type { DavLiveProperty } from "../rfc4918/properties";
-import type { DavPropertyName } from "../rfc4918/types";
+import type { Resource } from "../core/resource";
+import type { ResourceInfo } from "../core/types";
+import type { LiveProperty } from "../rfc4918/properties";
+import type { PropertyName } from "../rfc4918/types";
 import { DAV_NAMESPACE, createDavProperty } from "../core/xml";
-import type { DavQuotaProvider } from "./types";
+import type { QuotaProvider } from "./types";
 
-export const quotaProtectedPropertyNames: readonly DavPropertyName[] = [
+export const quotaProtectedPropertyNames: readonly PropertyName[] = [
   { namespaceURI: DAV_NAMESPACE, localName: "quota-available-bytes" },
   { namespaceURI: DAV_NAMESPACE, localName: "quota-used-bytes" },
 ];
 
 export const quotaLiveProperties = async (
-  provider: DavQuotaProvider,
-  resource: DavResource,
-  info: DavResourceInfo,
+  provider: QuotaProvider,
+  resource: Resource,
+  info: ResourceInfo,
   include: boolean,
-): Promise<readonly DavLiveProperty[]> => {
+): Promise<readonly LiveProperty[]> => {
   if (!include || info.kind !== "collection") return [];
   const value = await provider(resource.path);
   if (!value) return [];

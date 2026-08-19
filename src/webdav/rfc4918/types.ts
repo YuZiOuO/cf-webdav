@@ -1,49 +1,49 @@
 import type {
-  DavPath,
-  DavProperty,
-  DavPropertyName,
+  Path,
+  Property,
+  PropertyName,
   LockDepth,
   LockScope,
 } from "../core/types";
 
 export type {
-  DavProperty,
-  DavPropertyName,
+  Property,
+  PropertyName,
   LockDepth,
   LockScope,
 } from "../core/types";
 
-export type DavPropfindRequest =
-  | { kind: "allprop"; include?: readonly DavPropertyName[] }
+export type PropfindRequest =
+  | { kind: "allprop"; include?: readonly PropertyName[] }
   | { kind: "propname" }
-  | { kind: "prop"; names: readonly DavPropertyName[] };
+  | { kind: "prop"; names: readonly PropertyName[] };
 
-export interface DavPropStat {
-  properties: readonly DavProperty[];
+export interface PropStat {
+  properties: readonly Property[];
   status: number;
 }
 
-export type DavProppatchInstruction =
-  | { kind: "set"; property: DavProperty }
-  | { kind: "remove"; name: DavPropertyName };
+export type ProppatchInstruction =
+  | { kind: "set"; property: Property }
+  | { kind: "remove"; name: PropertyName };
 
-export type DavIfCondition =
+export type IfCondition =
   | { kind: "state-token"; token: string; not?: boolean }
   | { kind: "entity-tag"; etag: string; not?: boolean };
 
-export interface DavIfList {
-  resource?: DavPath;
-  conditions: readonly DavIfCondition[];
+export interface IfList {
+  resource?: Path;
+  conditions: readonly IfCondition[];
 }
 
-export type DavIfHeader = readonly DavIfList[];
+export type IfHeader = readonly IfList[];
 
 export type LockToken = string & { readonly __lockToken: unique symbol };
 export type LockTimeout = number | "infinite";
 
 export interface Lock {
   token: LockToken;
-  root: DavPath;
+  root: Path;
   scope: LockScope;
   depth: LockDepth;
   timeout?: LockTimeout;

@@ -1,15 +1,15 @@
-import type { DavResource, DavResourceFactory } from "../core/resource";
-import type { DavPath, DavResourceInfo } from "../core/types";
-import type { DavLiveProperty } from "../rfc4918/properties";
-import type { DavPropertyName } from "../rfc4918/types";
+import type { Resource, ResourceFactory } from "../core/resource";
+import type { Path, ResourceInfo } from "../core/types";
+import type { LiveProperty } from "../rfc4918/properties";
+import type { PropertyName } from "../rfc4918/types";
 import {
   appendDavElement,
   createDavProperty,
   DAV_NAMESPACE,
 } from "../core/xml";
 import type {
-  DavChangeFeed,
-  DavRevisionProvider,
+  ChangeFeed,
+  RevisionProvider,
   SyncChange,
   SyncRequest,
   SyncResult,
@@ -18,34 +18,34 @@ import type {
 
 const TOKEN_PREFIX = "urn:cf-webdav:sync:";
 
-export const syncProtectedPropertyNames: readonly DavPropertyName[] = [
+export const syncProtectedPropertyNames: readonly PropertyName[] = [
   { namespaceURI: DAV_NAMESPACE, localName: "sync-token" },
   { namespaceURI: DAV_NAMESPACE, localName: "supported-report-set" },
 ];
 
-export class DavSync {
+export class Sync {
   constructor(
-    private readonly resource: DavResourceFactory,
-    private readonly changes: DavChangeFeed,
-    private readonly revision: DavRevisionProvider,
+    private readonly resource: ResourceFactory,
+    private readonly changes: ChangeFeed,
+    private readonly revision: RevisionProvider,
   ) {}
 
-  async getSyncToken(collection: DavPath) {
+  async getSyncToken(collection: Path) {
     const revision = await this.revision(collection);
     return `${TOKEN_PREFIX}${revision}` as SyncToken;
   }
 
-  async stateTokenMatches(collection: DavPath, token: string) {
+  async stateTokenMatches(collection: Path, token: string) {
     return token === (await this.getSyncToken(collection));
   }
 
   async liveProperties(
-    resource: DavResource,
-    info: DavResourceInfo,
+    resource: Resource,
+    info: ResourceInfo,
     syncToken?: SyncToken,
-  ): Promise<readonly DavLiveProperty[]> {
+  ): Promise<readonly LiveProperty[]> {
     if (info.kind !== "collection") return [];
-    const properties: DavLiveProperty[] = [];
+    const properties: LiveProperty[] = [];
     const token = syncToken ?? (await this.getSyncToken(resource.path));
     if (token) {
       properties.push({
@@ -67,7 +67,7 @@ export class DavSync {
     return properties;
   }
 
-  async sync(collection: DavPath, request: SyncRequest): Promise<SyncResult> {
+  async sync(collection: Path, request: SyncRequest): Promise<SyncResult> {
     const revision = (() => {
       if (request.syncToken === undefined) return 0;
       if (!request.syncToken.startsWith(TOKEN_PREFIX)) return undefined;
@@ -81,8 +81,8 @@ export class DavSync {
     if (request.syncToken === undefined) {
       const currentChanges: SyncChange[] = [];
       const visit = async (
-        resource: DavResource,
-        info: DavResourceInfo,
+        resource: Resource,
+        info: ResourceInfo,
         includeChildren: boolean,
       ) => {
         currentChanges.push({

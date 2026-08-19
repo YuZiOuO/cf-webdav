@@ -1,7 +1,7 @@
-import type { DavPropfindRequest, LockToken } from "./types";
-import type { DavLocks } from "./locks";
-import type { DavPath } from "../core/types";
-import type { DavEnv } from "../types";
+import type { PropfindRequest, LockToken } from "./types";
+import type { Locks } from "./locks";
+import type { Path } from "../core/types";
+import type { Env } from "../types";
 import { Hono } from "hono";
 import rangeParser from "range-parser";
 import { ifHeaderMatches, parseIfHeader } from "./http";
@@ -27,8 +27,8 @@ const ALLOW =
 const DAV = "1, 2, extended-mkcol";
 
 const isLockedWithoutToken = async (
-  locks: DavLocks,
-  path: DavPath,
+  locks: Locks,
+  path: Path,
   ifHeader: string | undefined,
 ) => {
   const active = await locks.getLocks(path);
@@ -45,7 +45,7 @@ const isLockedWithoutToken = async (
   );
 };
 
-export const rfc4918 = new Hono<DavEnv>();
+export const rfc4918 = new Hono<Env>();
 
 rfc4918.options("*", (c) => c.body(null, 204, { Allow: ALLOW, DAV }));
 
@@ -65,7 +65,7 @@ rfc4918.on("PROPFIND", "*", async (c) => {
   if (!info) return c.text("Resource not found", 404);
   const body = c.req.raw.body ? await c.req.text() : "";
   if (body && !isValidXml(body)) return c.text("Invalid XML", 400);
-  const request: DavPropfindRequest = body
+  const request: PropfindRequest = body
     ? parsePropfind(body)
     : { kind: "allprop" };
   const requestedPropertyKeys =
@@ -256,7 +256,7 @@ rfc4918.on(["COPY", "MOVE"], "*", async (c) => {
   const source = dav.resource(c.get("path"));
   const destinationHeader = c.req.header("destination");
   if (!destinationHeader) return c.text("Invalid Destination header", 400);
-  let destination: DavPath;
+  let destination: Path;
   try {
     const url = new URL(destinationHeader, c.req.url);
     if (url.origin !== new URL(c.req.url).origin)

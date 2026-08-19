@@ -1,4 +1,4 @@
-import type { DavProperty, DavPropStat } from "../rfc4918/types";
+import type { Property, PropStat } from "../rfc4918/types";
 import { DAV_NAMESPACE, elementChildren } from "../core/xml";
 import {
   DOMParser,
@@ -6,13 +6,13 @@ import {
   type Element as XmlElement,
 } from "@xmldom/xmldom";
 
-export const parseMkcol = (xml: string): DavProperty[] => {
+export const parseMkcol = (xml: string): Property[] => {
   const root = new DOMParser().parseFromString(
     xml,
     "application/xml",
   ).documentElement;
   if (!root) throw new Error("Invalid XML document");
-  const properties: DavProperty[] = [];
+  const properties: Property[] = [];
   for (const set of elementChildren(root)) {
     if (set.namespaceURI !== DAV_NAMESPACE || set.localName !== "set") continue;
     const prop = elementChildren(set).find(
@@ -26,7 +26,7 @@ export const parseMkcol = (xml: string): DavProperty[] => {
   return properties;
 };
 
-export const mkcolResponse = (propstats: readonly DavPropStat[]) => {
+export const mkcolResponse = (propstats: readonly PropStat[]) => {
   const serializer = new XMLSerializer();
   const document = new DOMParser().parseFromString(
     '<D:mkcol-response xmlns:D="DAV:"/>',

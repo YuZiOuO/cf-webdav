@@ -1,23 +1,23 @@
-import type { DavLocks } from "./rfc4918/locks";
-import type { DavProperties } from "./rfc4918/properties";
-import type { DavQuotaProvider } from "./rfc4331/types";
-import type { DavSync } from "./rfc6578/sync";
-import type { DavResourceFactory } from "./core/resource";
-import type { DavPath } from "./core/types";
+import type { Locks } from "./rfc4918/locks";
+import type { Properties } from "./rfc4918/properties";
+import type { QuotaProvider } from "./rfc4331/types";
+import type { Sync } from "./rfc6578/sync";
+import type { ResourceFactory } from "./core/resource";
+import type { Path } from "./core/types";
 
-export interface DavContext {
-  resource: DavResourceFactory;
-  locks: DavLocks;
-  properties: DavProperties;
-  sync: DavSync;
-  quota: DavQuotaProvider;
-  stateTokenMatches: (path: DavPath, token: string) => Promise<boolean>;
+export interface Context {
+  resource: ResourceFactory;
+  locks: Locks;
+  properties: Properties;
+  sync: Sync;
+  quota: QuotaProvider;
+  stateTokenMatches: (path: Path, token: string) => Promise<boolean>;
 }
 
-export interface DavEnv {
+export interface Env {
   Bindings: CloudflareBindings;
   Variables: {
-    path: DavPath;
-    dav: DavContext;
+    path: Path;
+    dav: Context;
   };
 }

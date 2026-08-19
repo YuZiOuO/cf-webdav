@@ -1,4 +1,4 @@
-import type { DavEnv } from "../types";
+import type { Env } from "../types";
 import { Hono } from "hono";
 import {
   DAV_NAMESPACE,
@@ -8,7 +8,7 @@ import {
 } from "../core/xml";
 import { mkcolResponse, parseMkcol } from "./xml";
 
-export const rfc5689 = new Hono<DavEnv>();
+export const rfc5689 = new Hono<Env>();
 
 rfc5689.on("MKCOL", "*", async (c) => {
   const path = c.get("path");

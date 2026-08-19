@@ -5,21 +5,21 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { FileSystemError } from "../filesystem";
 import type { FileSystemErrorCode } from "../filesystem";
 import { createR2FileSystem } from "../filesystem";
-import { DavLocks } from "./rfc4918/locks";
-import { DavProperties } from "./rfc4918/properties";
+import { Locks } from "./rfc4918/locks";
+import { Properties } from "./rfc4918/properties";
 import { decodePath } from "../path";
 import { quotaProtectedPropertyNames } from "./rfc4331/quota";
-import { DavSync, syncProtectedPropertyNames } from "./rfc6578/sync";
-import { DavResource, toDavResourceInfo } from "./core/resource";
-import type { DavPath } from "./core/types";
-import type { DavEnv } from "./types";
+import { Sync, syncProtectedPropertyNames } from "./rfc6578/sync";
+import { Resource, toResourceInfo } from "./core/resource";
+import type { Path } from "./core/types";
+import type { Env } from "./types";
 import { rfc4918 } from "./rfc4918/routes";
 import { rfc5689 } from "./rfc5689/routes";
 import { rfc6578 } from "./rfc6578/routes";
 
 export { WebDavState } from "./core/state";
 
-const app = new Hono<DavEnv>();
+const app = new Hono<Env>();
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return error.getResponse();
@@ -50,14 +50,14 @@ app.use("*", async (c, next) => {
     const path = decodePath(new URL(c.req.url).pathname);
     const webDavState = c.env.WebDavState.getByName("root");
     const filesystem = createR2FileSystem(c.env);
-    const locks = new DavLocks(webDavState);
-    const properties = new DavProperties(webDavState, locks, [
+    const locks = new Locks(webDavState);
+    const properties = new Properties(webDavState, locks, [
       ...quotaProtectedPropertyNames,
       ...syncProtectedPropertyNames,
     ]);
-    const resource = (target: DavPath) =>
-      new DavResource(target, filesystem, webDavState);
-    const sync = new DavSync(
+    const resource = (target: Path) =>
+      new Resource(target, filesystem, webDavState);
+    const sync = new Sync(
       resource,
       async (collection, revision, level) => {
         const result = await filesystem.changesSince(
@@ -72,7 +72,7 @@ app.use("*", async (c, next) => {
               ? {
                   kind: "changed",
                   path: change.path,
-                  resource: toDavResourceInfo(change.resource),
+                  resource: toResourceInfo(change.resource),
                 }
               : change,
           ),

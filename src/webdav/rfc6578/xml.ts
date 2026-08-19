@@ -1,5 +1,5 @@
 import { DOMParser } from "@xmldom/xmldom";
-import type { DavPropertyName } from "../rfc4918/types";
+import type { PropertyName } from "../rfc4918/types";
 import { DAV_NAMESPACE, elementChildren, propertyName } from "../core/xml";
 import { multistatus as baseMultistatus } from "../rfc4918/xml";
 
@@ -30,7 +30,7 @@ export const parseSyncCollection = (xml: string) => {
     syncToken: find("sync-token")?.textContent?.trim() || undefined,
     syncLevel: find("sync-level")?.textContent?.trim(),
     properties: prop
-      ? elementChildren(prop).map((element): DavPropertyName =>
+      ? elementChildren(prop).map((element): PropertyName =>
           propertyName(element as unknown as Element),
         )
       : [],

@@ -1,5 +1,5 @@
-import type { DavIfCondition, DavIfHeader, DavIfList } from "./types";
-import type { DavPath, EntityTag } from "../core/types";
+import type { IfCondition, IfHeader, IfList } from "./types";
+import type { Path, EntityTag } from "../core/types";
 import { HTTPException } from "hono/http-exception";
 import { decodePath } from "../../path";
 
@@ -14,12 +14,12 @@ interface IfMatchContext {
   lockTokens: ReadonlySet<string>;
 }
 
-export const parseIfHeader = (header: string): DavIfHeader => {
+export const parseIfHeader = (header: string): IfHeader => {
   const value = header.trim();
   if (!value) return [];
 
   let index = 0;
-  const lists: DavIfList[] = [];
+  const lists: IfList[] = [];
   const skipSpace = () => {
     while (index < value.length && /\s/.test(value[index])) index += 1;
   };
@@ -42,7 +42,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     if (!/^(?:W\/)?"/.test(etag) || !etag.endsWith('"')) throw invalidIf();
     return etag as EntityTag;
   };
-  const parseCondition = (): DavIfCondition => {
+  const parseCondition = (): IfCondition => {
     skipSpace();
     let not = false;
     if (
@@ -67,11 +67,11 @@ export const parseIfHeader = (header: string): DavIfHeader => {
       };
     throw invalidIf();
   };
-  const parseList = (resource?: DavPath): DavIfList => {
+  const parseList = (resource?: Path): IfList => {
     skipSpace();
     if (value[index] !== "(") throw invalidIf();
     index += 1;
-    const conditions: DavIfCondition[] = [];
+    const conditions: IfCondition[] = [];
     while (true) {
       skipSpace();
       if (value[index] === ")") {
@@ -84,7 +84,7 @@ export const parseIfHeader = (header: string): DavIfHeader => {
     if (!conditions.length) throw invalidIf();
     return { ...(resource ? { resource } : {}), conditions };
   };
-  const parseResource = (): DavPath => {
+  const parseResource = (): Path => {
     const tag = parseTag();
     try {
       const pathname = tag.startsWith("/") ? tag : new URL(tag).pathname;
@@ -111,10 +111,10 @@ export const parseIfHeader = (header: string): DavIfHeader => {
 };
 
 export const ifHeaderMatches = async (
-  header: DavIfHeader,
-  requestPath: DavPath,
-  contextFor: (path: DavPath) => Promise<IfMatchContext>,
-  stateTokenMatches: (token: string, path: DavPath) => Promise<boolean> = () =>
+  header: IfHeader,
+  requestPath: Path,
+  contextFor: (path: Path) => Promise<IfMatchContext>,
+  stateTokenMatches: (token: string, path: Path) => Promise<boolean> = () =>
     Promise.resolve(false),
 ) => {
   for (const list of header) {
