@@ -17,7 +17,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const configPath = "wrangler.jsonc";
 const defaults = {
-  workerName: "cf-webdav",
+  workerName: "cf-fs",
   bucketName: "webdav",
   username: "admin",
 } as const;
@@ -83,7 +83,7 @@ const confirmAction = async (message: string) => {
 };
 
 const destroy = async () => {
-  intro("cf-webdav destruction");
+  intro("cf-fs destruction");
   const workerName = await requiredText("Worker name", "");
   let bucketName: string | undefined;
   try {
@@ -160,12 +160,12 @@ const main = async () => {
     return;
   }
   if (command !== "deploy") {
-    console.error("Usage: cf-webdav <deploy|destroy>");
+    console.error("Usage: cf-fs <deploy|destroy>");
     process.exitCode = 1;
     return;
   }
 
-  intro("部署 cf-webdav / Deploy cf-webdav");
+  intro("部署 cf-fs / Deploy cf-fs");
   await authenticate();
   const config = await readFile(configPath, "utf8").catch(() => "");
   const workerName = await requiredText(

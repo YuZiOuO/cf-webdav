@@ -1,9 +1,24 @@
 {
-  "name": "cf-webdav",
+  "name": "cf-fs",
+  "version": "0.0.0-development",
+  "description": "A Cloudflare-native file storage service with WebDAV and browser access.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YuZiOuO/cf-fs.git"
+  },
+  "homepage": "https://github.com/YuZiOuO/cf-fs#readme",
+  "bugs": {
+    "url": "https://github.com/YuZiOuO/cf-fs/issues"
+  },
+  "files": [
+    "scripts",
+    "src",
+    "wrangler.jsonc"
+  ],
   "bin": {
-    "cf-webdav": "scripts/deploy.ts"
+    "cf-fs": "scripts/deploy.ts"
   },
   "scripts": {
     "dev": "wrangler dev",
@@ -33,6 +48,7 @@
     "@types/range-parser": "^1.2.7",
     "eslint": "^10.8.0",
     "prettier": "^3.9.6",
+    "semantic-release": "^25.0.9",
     "typescript-eslint": "^8.65.0",
     "wrangler": "^4.114.0"
   }
