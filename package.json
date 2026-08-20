@@ -2,6 +2,9 @@
   "name": "cf-webdav",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "cf-webdav": "scripts/deploy.ts"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
@@ -15,7 +18,9 @@
     "check": "prettier --check . && bun run lint && tsc --noEmit && bun run test"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@xmldom/xmldom": "^0.9.10",
+    "execa": "^10.0.1",
     "fast-xml-parser": "5.3.9",
     "fresh": "^0.5.2",
     "hono": "^4.13.2",
