@@ -1,3 +1,9 @@
+import { dirname, relative } from "node:path/posix";
+import type {
+  ChangeCursor,
+  ChangeFeedProvider,
+  NodeChange,
+} from "../../interfaces";
 import type { Resource, ResourceFactory } from "../core/resource";
 import type { Path, ResourceInfo } from "../core/types";
 import type { LiveProperty } from "../rfc4918/properties";
@@ -7,14 +13,7 @@ import {
   createDavProperty,
   DAV_NAMESPACE,
 } from "../core/xml";
-import type {
-  ChangeFeed,
-  RevisionProvider,
-  SyncChange,
-  SyncRequest,
-  SyncResult,
-  SyncToken,
-} from "./types";
+import type { SyncChange, SyncRequest, SyncResult, SyncToken } from "./types";
 
 const TOKEN_PREFIX = "urn:cf-webdav:sync:";
 
@@ -26,13 +25,12 @@ export const syncProtectedPropertyNames: readonly PropertyName[] = [
 export class Sync {
   constructor(
     private readonly resource: ResourceFactory,
-    private readonly changes: ChangeFeed,
-    private readonly revision: RevisionProvider,
+    private readonly changes: ChangeFeedProvider,
   ) {}
 
   async getSyncToken(collection: Path) {
-    const revision = await this.revision(collection);
-    return `${TOKEN_PREFIX}${revision}` as SyncToken;
+    void collection;
+    return `${TOKEN_PREFIX}${await this.changes.getCurrentCursor()}` as SyncToken;
   }
 
   async stateTokenMatches(collection: Path, token: string) {
@@ -68,17 +66,10 @@ export class Sync {
   }
 
   async sync(collection: Path, request: SyncRequest): Promise<SyncResult> {
-    const revision = (() => {
-      if (request.syncToken === undefined) return 0;
-      if (!request.syncToken.startsWith(TOKEN_PREFIX)) return undefined;
-      const parsed = Number(request.syncToken.slice(TOKEN_PREFIX.length));
-      return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-    })();
-    if (revision === undefined) return { error: "valid-sync-token" };
-
     let changes: readonly SyncChange[];
-    let nextRevision: number;
+    let nextCursor: ChangeCursor;
     if (request.syncToken === undefined) {
+      nextCursor = await this.changes.getCurrentCursor();
       const currentChanges: SyncChange[] = [];
       const visit = async (
         resource: Resource,
@@ -104,18 +95,62 @@ export class Sync {
       const info = await resource.stat();
       if (info) await visit(resource, info, true);
       changes = currentChanges;
-      nextRevision = await this.revision(collection);
     } else {
-      const result = await this.changes(
-        collection,
-        revision,
-        request.syncLevel,
+      const after = request.syncToken.startsWith(TOKEN_PREFIX)
+        ? (request.syncToken.slice(TOKEN_PREFIX.length) as ChangeCursor)
+        : undefined;
+      if (!after) return { error: "valid-sync-token" };
+
+      const latest = new Map<Path, "changed" | "removed">();
+      const record = (path: Path, kind: "changed" | "removed") => {
+        const descendant = relative(collection, path);
+        const inScope =
+          request.syncLevel === "1"
+            ? dirname(path) === collection
+            : descendant !== "" &&
+              descendant !== ".." &&
+              !descendant.startsWith("../");
+        if (inScope) latest.set(path, kind);
+      };
+      const recordChange = (change: NodeChange) => {
+        switch (change.kind) {
+          case "created":
+          case "modified":
+            record(change.path, "changed");
+            break;
+          case "deleted":
+            record(change.path, "removed");
+            break;
+          case "moved":
+            record(change.previousPath, "removed");
+            record(change.path, "changed");
+            break;
+        }
+      };
+
+      let cursor = after;
+      for (;;) {
+        const page = await this.changes.readChanges(cursor);
+        for (const set of page.sets)
+          for (const change of set.changes) recordChange(change);
+        cursor = page.nextCursor;
+        if (!page.hasMore) break;
+      }
+      nextCursor = cursor;
+      changes = await Promise.all(
+        [...latest.entries()]
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(async ([path, kind]) => {
+            if (kind === "removed") return { kind, path };
+            const info = await this.resource(path).stat();
+            return info
+              ? { kind: "changed" as const, path, resource: info }
+              : { kind: "removed" as const, path };
+          }),
       );
-      nextRevision = result.revision;
-      changes = result.changes;
     }
 
-    const syncToken = `${TOKEN_PREFIX}${nextRevision}` as SyncToken;
+    const syncToken = `${TOKEN_PREFIX}${nextCursor}` as SyncToken;
     if (request.limit !== undefined && changes.length > request.limit) {
       return {
         changes: changes.slice(0, request.limit),

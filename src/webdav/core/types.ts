@@ -26,7 +26,6 @@ export interface FileInfo {
   kind: "file";
   lastModified: Date;
   contentLength: number;
-  contentType?: string;
 }
 
 export type ResourceInfo =
@@ -35,9 +34,3 @@ export type ResourceInfo =
       kind: "collection";
       lastModified: Date;
     };
-
-export interface FileData {
-  body: ReadableStream<Uint8Array>;
-  contentLength: number;
-  contentType?: string;
-}

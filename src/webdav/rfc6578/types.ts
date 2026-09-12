@@ -25,14 +25,3 @@ export type SyncResult =
       truncated: boolean;
     }
   | { error: "valid-sync-token" | "number-of-matches-within-limits" };
-
-export type ChangeFeed = (
-  collection: Path,
-  revision: number,
-  level: SyncLevel,
-) => Promise<{
-  revision: number;
-  changes: readonly SyncChange[];
-}>;
-
-export type RevisionProvider = (collection: Path) => Promise<number>;

@@ -1,10 +1,13 @@
 import type { Path } from "../core/types";
 import type { Lock, LockRequest, LockToken } from "./types";
 import { parseProperty, serializeProperty } from "../core/xml";
-import type { StoredLock, WebDavState } from "../core/state";
-import { unwrapState } from "../core/state";
+import type {
+  NamespaceLock,
+  NamespaceLockProvider,
+  NamespaceLockRequest,
+} from "../../interfaces";
 
-const toLock = (lock: StoredLock): Lock => ({
+const toLock = (lock: NamespaceLock): Lock => ({
   token: lock.token as LockToken,
   root: lock.root,
   scope: lock.scope,
@@ -14,42 +17,37 @@ const toLock = (lock: StoredLock): Lock => ({
 });
 
 export class Locks {
-  constructor(private readonly state: DurableObjectStub<WebDavState>) {}
+  constructor(private readonly provider: NamespaceLockProvider) {}
 
   async getLocks(path: Path) {
-    return (await this.state.getLocks(path)).map(toLock);
+    return (await this.provider.getNamespaceLocks(path)).map(toLock);
   }
 
   async lock(path: Path, request: LockRequest) {
-    return toLock(
-      unwrapState(
-        await this.state.createLock(path, {
-          scope: request.scope,
-          depth: request.depth,
-          ...(request.timeout === undefined || request.timeout === "infinite"
-            ? {}
-            : { timeout: request.timeout }),
-          ...(request.owner
-            ? { owner: serializeProperty({ element: request.owner }) }
-            : {}),
-        }),
-      ),
-    );
+    const lockRequest: NamespaceLockRequest = {
+      scope: request.scope,
+      depth: request.depth,
+      ...(request.timeout === undefined || request.timeout === "infinite"
+        ? {}
+        : { timeout: request.timeout }),
+      ...(request.owner
+        ? { owner: serializeProperty({ element: request.owner }) }
+        : {}),
+    };
+    return toLock(await this.provider.createNamespaceLock(path, lockRequest));
   }
 
   async refresh(path: Path, token: LockToken, timeout?: Lock["timeout"]) {
     return toLock(
-      unwrapState(
-        await this.state.refreshLock(
-          path,
-          token,
-          timeout === undefined || timeout === "infinite" ? undefined : timeout,
-        ),
+      await this.provider.refreshNamespaceLock(
+        path,
+        token,
+        timeout === undefined || timeout === "infinite" ? undefined : timeout,
       ),
     );
   }
 
   async unlock(path: Path, token: LockToken) {
-    unwrapState(await this.state.unlock(path, token));
+    await this.provider.unlockNamespaceLock(path, token);
   }
 }

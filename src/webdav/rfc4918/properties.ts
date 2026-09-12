@@ -1,8 +1,8 @@
 import { basename } from "node:path/posix";
+import type { XAttrProvider } from "../../interfaces";
+import { FileSystemError } from "../../filesystem";
 import type { Resource } from "../core/resource";
 import type { ResourceInfo } from "../core/types";
-import { unwrapState, type WebDavState } from "../core/state";
-import type { Locks } from "./locks";
 import type {
   PropfindRequest,
   Property,
@@ -32,8 +32,36 @@ interface PropfindItem {
   extraLive?: readonly LiveProperty[];
 }
 
+interface StoredProperty {
+  namespaceURI: string;
+  localName: string;
+  xml: string;
+}
+
 export const propertyKey = ({ namespaceURI, localName }: PropertyName) =>
   `${namespaceURI}\0${localName}`;
+
+const XATTR_PREFIX = "user.webdav.property.";
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+const propertyXattrName = ({ namespaceURI, localName }: PropertyName) =>
+  `${XATTR_PREFIX}${encodeURIComponent(namespaceURI)}:${encodeURIComponent(localName)}`;
+
+const propertyNameFromXattr = (name: string): PropertyName | undefined => {
+  if (!name.startsWith(XATTR_PREFIX)) return undefined;
+  const encoded = name.slice(XATTR_PREFIX.length);
+  const separator = encoded.indexOf(":");
+  if (separator < 0) return undefined;
+  try {
+    return {
+      namespaceURI: decodeURIComponent(encoded.slice(0, separator)),
+      localName: decodeURIComponent(encoded.slice(separator + 1)),
+    };
+  } catch {
+    return undefined;
+  }
+};
 
 const protectedPropertyNames = new Set(
   [
@@ -52,10 +80,42 @@ const instructionProperty = (instruction: ProppatchInstruction) =>
 
 export class Properties {
   constructor(
-    private readonly state: DurableObjectStub<WebDavState>,
-    private readonly locks: Locks,
+    private readonly xattrs: XAttrProvider,
     private readonly extraProtected: readonly PropertyName[] = [],
   ) {}
+
+  private async storedProperties(
+    items: readonly PropfindItem[],
+  ): Promise<Record<string, readonly StoredProperty[]>> {
+    const stored: Record<string, readonly StoredProperty[]> = {};
+    await Promise.all(
+      items.map(async ({ resource }) => {
+        const node = await resource.node();
+        if (!node) {
+          stored[resource.path] = [];
+          return;
+        }
+        const names = (await this.xattrs.listXattrs(node.id))
+          .map((name) => ({ name, property: propertyNameFromXattr(name) }))
+          .filter(
+            (entry): entry is { name: string; property: PropertyName } =>
+              entry.property !== undefined,
+          );
+        const properties = await Promise.all(
+          names.map(async ({ name, property }) => {
+            const value = await this.xattrs.getXattr(node.id, name);
+            return value
+              ? { ...property, xml: decoder.decode(value) }
+              : undefined;
+          }),
+        );
+        stored[resource.path] = properties.filter(
+          (value): value is StoredProperty => value !== undefined,
+        );
+      }),
+    );
+    return stored;
+  }
 
   private coreLiveProperties(
     resource: Resource,
@@ -116,10 +176,6 @@ export class Properties {
           String(info.contentLength),
         ),
       });
-      if (info.contentType)
-        add("getcontenttype", {
-          element: createDavProperty("getcontenttype", info.contentType),
-        });
     }
     return properties;
   }
@@ -137,7 +193,6 @@ export class Properties {
     items: readonly PropfindItem[],
     request: PropfindRequest,
   ): Promise<readonly (readonly PropStat[])[]> {
-    const paths = items.map(({ resource }) => resource.path);
     let etagMode: "fetch" | "name-only" | "omit";
     switch (request.kind) {
       case "propname":
@@ -159,9 +214,16 @@ export class Properties {
           : "omit";
         break;
     }
-    const [etags, storedProperties] = await Promise.all([
-      etagMode === "fetch" ? this.state.ensureETags(paths) : {},
-      this.state.getPropertiesForPaths(paths),
+    const etags: Record<string, EntityTag> = {};
+    const [, storedProperties] = await Promise.all([
+      etagMode === "fetch"
+        ? Promise.all(
+            items.map(async ({ resource }) => {
+              etags[resource.path] = await resource.etag();
+            }),
+          )
+        : Promise.resolve(),
+      this.storedProperties(items),
     ]);
 
     const propfindItem = ({
@@ -222,12 +284,7 @@ export class Properties {
         instruction.kind === "set"
           ? propertyName(instruction.property.element)
           : instruction.name;
-      return (
-        protectedPropertyNames.has(propertyKey(name)) ||
-        this.extraProtected.some(
-          (candidate) => propertyKey(candidate) === propertyKey(name),
-        )
-      );
+      return this.isProtectedName(name);
     };
     if (instructions.some(isProtected)) {
       return instructions.map((instruction) => ({
@@ -236,23 +293,22 @@ export class Properties {
       }));
     }
 
-    const stored: Parameters<WebDavState["patchProperties"]>[1] =
-      instructions.map((instruction) => {
-        if (instruction.kind !== "set")
-          return { kind: "remove" as const, name: instruction.name };
-        const { namespaceURI, localName } = propertyName(
-          instruction.property.element,
-        );
+    const node = await resource.node();
+    if (!node) throw new FileSystemError("not-found", "Resource not found");
+    const changes = instructions.map((instruction) => {
+      if (instruction.kind !== "set")
         return {
-          kind: "set" as const,
-          property: {
-            namespaceURI,
-            localName,
-            xml: serializeProperty(instruction.property),
-          },
+          kind: "remove" as const,
+          name: propertyXattrName(instruction.name),
         };
-      });
-    unwrapState(await this.state.patchProperties(resource.path, stored));
+      const name = propertyName(instruction.property.element);
+      return {
+        kind: "set" as const,
+        name: propertyXattrName(name),
+        value: encoder.encode(serializeProperty(instruction.property)),
+      };
+    });
+    await this.xattrs.patchXattrs(node.id, changes);
     return instructions.map((instruction) => ({
       properties: [instructionProperty(instruction)],
       status: 200,

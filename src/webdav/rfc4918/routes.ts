@@ -186,7 +186,6 @@ rfc4918.on(["GET", "HEAD"], "*", async (c) => {
     ETag: etag,
     "Last-Modified": file.lastModified.toUTCString(),
   });
-  if (file.contentType) headers.set("Content-Type", file.contentType);
   const end = contentRange?.end ?? file.contentLength - 1;
   headers.set(
     "Content-Length",
@@ -245,18 +244,14 @@ rfc4918.put("*", async (c) => {
     )
       return c.body(null, 412);
   } else if (locks.length) return c.text("Resource is locked", 423);
-  const contentType = c.req.header("content-type");
-  const etag = await resource.writeFile({
-    body:
-      c.req.raw.body ??
+  const etag = await resource.writeFile(
+    c.req.raw.body ??
       new ReadableStream<Uint8Array>({
         start(controller) {
           controller.close();
         },
       }),
-    contentLength: Number(c.req.header("content-length") ?? 0),
-    ...(contentType ? { contentType } : {}),
-  });
+  );
   return c.body(null, existing ? 204 : 201, {
     ETag: etag,
     ...(existing ? {} : { Location: c.req.url }),

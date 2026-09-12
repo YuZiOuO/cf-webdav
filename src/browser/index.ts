@@ -24,7 +24,7 @@ browser.get("*", async (c, next) => {
     children.push({
       name: entry.name,
       path: join(path, entry.name),
-      directory: entry.resource.kind === "directory",
+      directory: entry.node.kind === "directory",
     });
 
   const title = toHref(path, true);
