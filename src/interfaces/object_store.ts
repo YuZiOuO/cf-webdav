@@ -11,36 +11,18 @@ export interface ByteRange {
   end?: number;
 }
 
-export interface ObjectMetadata {
-  size: number;
-  contentType?: string;
-}
-
-export interface ObjectBody extends ObjectMetadata {
-  body: ReadableStream<Uint8Array>;
-  range?: ByteRange;
-}
-
-export interface ObjectData {
-  body: ReadableStream<Uint8Array>;
-  size: number;
-  contentType?: string;
-}
-
-export interface GetObjectOptions {
-  range?: ByteRange;
-}
-
 /**
  * Content storage only. Object keys must not be derived from filesystem
  * paths, and filesystem paths must not be exposed through this interface.
  */
 export interface ObjectStore {
-  head(key: ObjectKey): Promise<ObjectMetadata | undefined>;
   get(
     key: ObjectKey,
-    options?: GetObjectOptions,
-  ): Promise<ObjectBody | undefined>;
-  put(key: ObjectKey, data: ObjectData): Promise<ObjectMetadata>;
+    options?: { range?: ByteRange },
+  ): Promise<{ body: ReadableStream<Uint8Array> } | undefined>;
+  put(
+    key: ObjectKey,
+    body: ReadableStream<Uint8Array>,
+  ): Promise<{ size: number }>;
   delete(key: ObjectKey): Promise<void>;
 }
