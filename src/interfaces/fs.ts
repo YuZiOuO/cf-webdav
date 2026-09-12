@@ -46,6 +46,8 @@ export interface FileContent {
 /**
  * Filesystem semantics over a hierarchical namespace. A node has a stable
  * identity; paths name directory entries and may change without changing it.
+ * Copy creates new node identities and copies node metadata such as xattrs;
+ * move preserves node identities and metadata; removal deletes both.
  */
 export interface FileSystem {
   stat(path: Path): Promise<Node | undefined>;

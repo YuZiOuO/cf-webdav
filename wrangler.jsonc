@@ -11,10 +11,6 @@
       "type": "durable-object",
       "storage": "sqlite",
     },
-    "WebDavState": {
-      "type": "durable-object",
-      "storage": "sqlite",
-    },
     "default": {
       "type": "worker",
       "cache": {
@@ -39,10 +35,6 @@
       {
         "name": "FileSystemState",
         "class_name": "FileSystemState",
-      },
-      {
-        "name": "WebDavState",
-        "class_name": "WebDavState",
       },
     ],
   },

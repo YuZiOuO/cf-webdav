@@ -225,7 +225,6 @@ const main = async () => {
           durable_objects: {
             bindings: [
               { name: "FileSystemState", class_name: "FileSystemState" },
-              { name: "WebDavState", class_name: "WebDavState" },
             ],
           },
         },

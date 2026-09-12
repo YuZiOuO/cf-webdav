@@ -83,7 +83,6 @@ gateway.all("*", async (c) => {
 });
 
 export { FileSystemState } from "./filesystem";
-export { WebDavState } from "./webdav";
 
 // The default Worker is the only public HTTP entry point.
 export default {
