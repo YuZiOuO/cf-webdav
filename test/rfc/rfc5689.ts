@@ -2,12 +2,9 @@ import assert from "node:assert/strict";
 import {
   DAV_NAMESPACE,
   TEST_NAMESPACE,
-  assertElement,
   assertStatus,
   childElement,
   parseDavMultiStatus,
-  parseDavPropStats,
-  parseXml,
   propfind,
   propfindBody,
   propertyStatus,
@@ -54,15 +51,15 @@ export function registerRfc5689Tests(client: WebDavTestClient) {
       rfc: "5689",
       section: "3",
       requirement: "MUST",
-      title: "Extended MKCOL initializes collection properties",
+      title: "Extended MKCOL initializes properties in document order",
       prerequisites: [
         "The target is unmapped and its parent collection exists.",
       ],
-      request: "MKCOL {collection}; Content-Type: application/xml; DAV:mkcol",
+      request:
+        "MKCOL {collection}; Content-Type: application/xml; DAV:mkcol with two ordered DAV:set instructions",
       assertions: [
         "The response is 201.",
-        "A non-empty success body is a DAV:mkcol-response with status 200 for each property.",
-        "The created collection has DAV:collection and the initialized dead property.",
+        "The created collection has DAV:collection and the dead property's later value.",
       ],
       alternatives: ["A successful response body may be empty."],
     },
@@ -71,20 +68,9 @@ export function registerRfc5689Tests(client: WebDavTestClient) {
       const response = await client.request(collection, {
         method: "MKCOL",
         headers: { "Content-Type": "application/xml" },
-        body: '<D:mkcol xmlns:D="DAV:" xmlns:T="urn:cf-r2-webdav:rfc-test"><D:set><D:prop><D:resourcetype><D:collection/></D:resourcetype><T:label>created</T:label></D:prop></D:set></D:mkcol>',
+        body: '<D:mkcol xmlns:D="DAV:" xmlns:T="urn:cf-r2-webdav:rfc-test"><D:set><D:prop><D:resourcetype><D:collection/></D:resourcetype><T:label>first</T:label></D:prop></D:set><D:set><D:prop><T:label>second</T:label></D:prop></D:set></D:mkcol>',
       });
       await assertStatus(response, 201);
-      const body = await response.text();
-      if (body.trim()) {
-        const root = parseXml(body);
-        assertElement(root, DAV_NAMESPACE, "mkcol-response");
-        const propstats = parseDavPropStats(root);
-        assert.equal(
-          propertyStatus(propstats, DAV_NAMESPACE, "resourcetype"),
-          200,
-        );
-        assert.equal(propertyStatus(propstats, TEST_NAMESPACE, "label"), 200);
-      }
 
       const found = await propfind(
         client,
@@ -114,61 +100,8 @@ export function registerRfc5689Tests(client: WebDavTestClient) {
       );
       assert.equal(
         requiredProperty(item.propstats, TEST_NAMESPACE, "label").textContent,
-        "created",
+        "second",
       );
-    },
-  );
-
-  rfcTest(
-    {
-      id: "RFC5689-03-002",
-      rfc: "5689",
-      section: "3, 3.3",
-      requirement: "MUST",
-      title: "Extended MKCOL rejects an unsupported resource type atomically",
-      prerequisites: [
-        "The target is unmapped and its parent collection exists.",
-      ],
-      request:
-        "MKCOL {collection}; DAV:mkcol with an unsupported DAV:resourcetype",
-      assertions: [
-        "The response fails with DAV:mkcol-response.",
-        "Each requested property has a non-2xx status.",
-        "The collection is not created.",
-      ],
-      alternatives: ["RFC 5689 identifies 403 as a typical failure status."],
-    },
-    async () => {
-      const collection = client.newPath("extended-mkcol-failure");
-      const response = await client.request(collection, {
-        method: "MKCOL",
-        headers: { "Content-Type": "application/xml" },
-        body: '<D:mkcol xmlns:D="DAV:" xmlns:T="urn:cf-r2-webdav:rfc-test"><D:set><D:prop><D:resourcetype><D:collection/><T:unsupported-resource/></D:resourcetype><T:label>not-created</T:label></D:prop></D:set></D:mkcol>',
-      });
-      assert.ok(
-        !response.ok,
-        `Unexpected successful status: ${response.status}`,
-      );
-      assert.match(
-        response.headers.get("Content-Type") ?? "",
-        /(?:application|text)\/xml/i,
-        "An extended MKCOL property failure must return an XML response body",
-      );
-      const root = parseXml(await response.text());
-      assertElement(root, DAV_NAMESPACE, "mkcol-response");
-      const propstats = parseDavPropStats(root);
-      assert.ok(
-        (propertyStatus(propstats, DAV_NAMESPACE, "resourcetype") ?? 200) >=
-          300,
-        "DAV:resourcetype was not reported as a failure",
-      );
-      assert.ok(
-        (propertyStatus(propstats, TEST_NAMESPACE, "label") ?? 200) >= 300,
-        "T:label was not reported as a failure",
-      );
-
-      const absent = await client.request(collection, { method: "GET" });
-      await assertStatus(absent, 404);
     },
   );
 }

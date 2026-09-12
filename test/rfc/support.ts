@@ -288,6 +288,43 @@ export const responseForPath = (
   return response;
 };
 
+export const findResponseForPath = (
+  multistatus: DavMultiStatus,
+  client: WebDavTestClient,
+  path: string,
+) => {
+  const expected = normalizePath(new URL(path, client.origin));
+  return multistatus.responses.find(
+    (candidate) =>
+      normalizePath(new URL(candidate.href, client.origin)) === expected,
+  );
+};
+
+export const responseElementForPath = (
+  xml: string,
+  client: WebDavTestClient,
+  path: string,
+) => {
+  const expected = normalizePath(new URL(path, client.origin));
+  const response = davChildren(parseXml(xml), "response").find((candidate) =>
+    davChildren(candidate, "href").some(
+      (href) =>
+        typeof href.textContent === "string" &&
+        normalizePath(new URL(href.textContent, client.origin)) === expected,
+    ),
+  );
+  assert.ok(response, `No DAV:response for ${path}`);
+  return response;
+};
+
+export const assertUniqueHrefs = (
+  hrefs: readonly string[],
+  client: WebDavTestClient,
+) => {
+  const urls = hrefs.map((href) => new URL(href, client.origin).href);
+  assert.equal(new Set(urls).size, urls.length, "Duplicate DAV:href values");
+};
+
 export const propertyStatus = (
   propstats: readonly DavPropStat[],
   namespace: string,
@@ -330,6 +367,11 @@ export const childElement = (
 ) =>
   Array.from(parent.children).find((element) =>
     isElement(element, namespace, name),
+  );
+
+export const davChildren = (parent: Element, name: string) =>
+  Array.from(parent.children).filter((element) =>
+    isElement(element, DAV_NAMESPACE, name),
   );
 
 export const requiredChild = (
