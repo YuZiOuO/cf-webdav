@@ -1,15 +1,15 @@
 import { relative } from "node:path/posix";
 import { FileSystemError } from "../errors";
-import type { MoveOptions, Path } from "../../interfaces";
+import type { Path } from "../../interfaces";
 import { unwrapState } from "../meta";
-import { deleteReleasedObjects, toResource } from "./helper";
+import { deleteReleasedObjects, toNode } from "./helper";
 import type { FileSystemDependencies } from "./helper";
 
 export const move = async (
   deps: FileSystemDependencies,
   source: Path,
   destination: Path,
-  options: MoveOptions,
+  options: { overwrite: boolean },
 ) => {
   const destinationIsDescendant = relative(source, destination);
   if (
@@ -20,8 +20,8 @@ export const move = async (
   )
     throw new FileSystemError("invalid-path", "Invalid source or destination");
   const moved = unwrapState(
-    await deps.state.moveResource(source, destination, options.overwrite),
+    await deps.state.moveNode(source, destination, options.overwrite),
   );
   await deleteReleasedObjects(deps.objects, moved.releasedObjectKeys);
-  return toResource(moved.resource);
+  return toNode(moved.node);
 };

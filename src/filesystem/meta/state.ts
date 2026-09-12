@@ -9,11 +9,10 @@ export interface StoredFile {
   createdAt: number;
   lastModified: number;
   size: number;
-  contentType?: string;
-  objectKey?: string;
+  objectKey: string;
 }
 
-interface StoredDirectory {
+export interface StoredDirectory {
   path: string;
   id: string;
   kind: "directory";
@@ -21,34 +20,70 @@ interface StoredDirectory {
   lastModified: number;
 }
 
-export type StoredResource = StoredFile | StoredDirectory;
+export type StoredNode = StoredFile | StoredDirectory;
 
 interface FileWrite {
   id: string;
   objectKey: string;
   size: number;
-  contentType?: string;
-}
-
-interface DirectoryCreate {
-  id?: string;
 }
 
 interface CopyPlan {
-  source: StoredResource[];
-  replaced: StoredResource[];
+  source: StoredNode[];
+  replaced: StoredNode[];
 }
 
-type StoredSyncChange =
-  | { kind: "changed"; path: string; resource: StoredResource }
-  | { kind: "removed"; path: string };
+export type StoredNodeChange =
+  | { kind: "created"; nodeId: string; path: string }
+  | { kind: "modified"; nodeId: string; path: string }
+  | { kind: "deleted"; nodeId: string; path: string }
+  | {
+      kind: "moved";
+      nodeId: string;
+      previousPath: string;
+      path: string;
+    };
 
-interface StoredChangeResult {
-  revision: number;
-  changes: StoredSyncChange[];
+export interface StoredChangeSet {
+  cursor: string;
+  changes: readonly StoredNodeChange[];
+}
+
+export interface StoredChangePage {
+  sets: readonly StoredChangeSet[];
+  nextCursor: string;
+  hasMore: boolean;
+}
+
+export interface StoredLockRange {
+  start: string;
+  length: string;
+}
+
+export interface StoredLockConflict {
+  owner: { sessionId: string; ownerId: string };
+  type: "read" | "write";
+  range: StoredLockRange;
+}
+
+export interface StoredNamespaceLock {
+  token: string;
+  root: string;
+  scope: "exclusive" | "shared";
+  depth: "0" | "infinity";
+  timeout?: number;
+  owner?: string;
+}
+
+export interface StoredNamespaceLockRequest {
+  scope: "exclusive" | "shared";
+  depth: "0" | "infinity";
+  timeout?: number;
+  owner?: string;
 }
 
 const ROOT = "/";
+const LOCK_LEASE_MS = 60_000;
 
 interface ResourceRow {
   path: string;
@@ -58,27 +93,120 @@ interface ResourceRow {
   last_modified: number;
   object_key: string | null;
   size: number | null;
-  content_type: string | null;
   [key: string]: SqlStorageValue;
 }
 
-interface ChangeRow {
-  path: string;
-  kind: "changed" | "removed";
+interface MetadataRow {
   revision: number;
+  journal_id: string;
   [key: string]: SqlStorageValue;
 }
 
-interface RevisionRow {
+interface ChangeSetRow {
   revision: number;
+  changes_json: string;
   [key: string]: SqlStorageValue;
 }
 
-interface ObjectRefRow {
-  object_key: string;
-  ref_count: number;
+interface XAttrRow {
+  value: ArrayBuffer;
   [key: string]: SqlStorageValue;
 }
+
+interface NamespaceLockRow {
+  token: string;
+  root: string;
+  scope: "exclusive" | "shared";
+  depth: "0" | "infinity";
+  expires_at: number | null;
+  owner: string | null;
+  [key: string]: SqlStorageValue;
+}
+
+interface SessionRow {
+  session_id: string;
+  expires_at: number;
+  [key: string]: SqlStorageValue;
+}
+
+interface RecordLockRow {
+  id: number;
+  node_id: string;
+  session_id: string;
+  owner_id: string;
+  type: "read" | "write";
+  start: string;
+  length: string;
+  [key: string]: SqlStorageValue;
+}
+
+interface FlockRow {
+  node_id: string;
+  session_id: string;
+  owner_id: string;
+  type: "shared" | "exclusive";
+  [key: string]: SqlStorageValue;
+}
+
+const normalizeRange = (range: StoredLockRange) => {
+  try {
+    const start = BigInt(range.start);
+    const length = BigInt(range.length);
+    if (start < 0n || length < 0n) return undefined;
+    return { start: start.toString(), length: length.toString() };
+  } catch {
+    return undefined;
+  }
+};
+
+const rangeEnd = (range: StoredLockRange) => {
+  const length = BigInt(range.length);
+  return length === 0n ? undefined : BigInt(range.start) + length;
+};
+
+const rangesOverlap = (left: StoredLockRange, right: StoredLockRange) => {
+  const leftEnd = rangeEnd(left);
+  const rightEnd = rangeEnd(right);
+  return (
+    (leftEnd === undefined || BigInt(right.start) < leftEnd) &&
+    (rightEnd === undefined || BigInt(left.start) < rightEnd)
+  );
+};
+
+const subtractRange = (original: StoredLockRange, removal: StoredLockRange) => {
+  if (!rangesOverlap(original, removal)) return [original];
+
+  const originalStart = BigInt(original.start);
+  const originalEnd = rangeEnd(original);
+  const removalStart = BigInt(removal.start);
+  const removalEnd = rangeEnd(removal);
+  const result: StoredLockRange[] = [];
+
+  if (originalStart < removalStart) {
+    const end =
+      originalEnd === undefined || removalStart < originalEnd
+        ? removalStart
+        : originalEnd;
+    if (end > originalStart)
+      result.push({
+        start: originalStart.toString(),
+        length: (end - originalStart).toString(),
+      });
+  }
+
+  if (
+    removalEnd !== undefined &&
+    (originalEnd === undefined || removalEnd < originalEnd)
+  ) {
+    const start = originalStart > removalEnd ? originalStart : removalEnd;
+    result.push({
+      start: start.toString(),
+      length:
+        originalEnd === undefined ? "0" : (originalEnd - start).toString(),
+    });
+  }
+  return result;
+};
 
 export class FileSystemState extends DurableObject {
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
@@ -94,8 +222,7 @@ export class FileSystemState extends DurableObject {
           created_at INTEGER NOT NULL,
           last_modified INTEGER NOT NULL,
           object_key TEXT,
-          size INTEGER,
-          content_type TEXT
+          size INTEGER
         )`,
       );
       ctx.storage.sql.exec(
@@ -109,26 +236,70 @@ export class FileSystemState extends DurableObject {
         )`,
       );
       ctx.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS fs_changes (
-          revision INTEGER NOT NULL,
-          path TEXT NOT NULL,
-          kind TEXT NOT NULL
-        )`,
-      );
-      ctx.storage.sql.exec(
-        `CREATE INDEX IF NOT EXISTS fs_changes_by_revision
-         ON fs_changes (revision)`,
-      );
-      ctx.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS fs_metadata (
           id INTEGER PRIMARY KEY CHECK (id = 1),
-          revision INTEGER NOT NULL
+          revision INTEGER NOT NULL,
+          journal_id TEXT NOT NULL
         )`,
       );
       ctx.storage.sql.exec(
-        "INSERT OR IGNORE INTO fs_metadata (id, revision) VALUES (1, 0)",
+        "INSERT OR IGNORE INTO fs_metadata (id, revision, journal_id) VALUES (1, 0, ?)",
+        crypto.randomUUID(),
       );
-
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_change_sets (
+          revision INTEGER PRIMARY KEY,
+          changes_json TEXT NOT NULL
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_xattrs (
+          node_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          value BLOB NOT NULL,
+          PRIMARY KEY (node_id, name)
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_namespace_locks (
+          token TEXT PRIMARY KEY,
+          root TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          depth TEXT NOT NULL,
+          expires_at INTEGER,
+          owner TEXT
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_sessions (
+          session_id TEXT PRIMARY KEY,
+          expires_at INTEGER NOT NULL
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_record_locks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          node_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          start TEXT NOT NULL,
+          length TEXT NOT NULL
+        )`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE INDEX IF NOT EXISTS fs_record_locks_by_node
+         ON fs_record_locks (node_id)`,
+      );
+      ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fs_flocks (
+          node_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          PRIMARY KEY (node_id, session_id, owner_id)
+        )`,
+      );
       const now = Date.now();
       ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO fs_resources
@@ -146,19 +317,27 @@ export class FileSystemState extends DurableObject {
     return this.ctx.storage.transactionSync(callback);
   }
 
-  private resource(path: string) {
+  private resource(path: string): StoredNode | undefined {
     const row = this.ctx.storage.sql
       .exec<ResourceRow>(
-        `SELECT path, id, kind, created_at, last_modified, object_key,
-                size, content_type
+        `SELECT path, id, kind, created_at, last_modified, object_key, size
          FROM fs_resources WHERE path = ?`,
         path,
       )
       .toArray()[0];
-    return row ? this.toResource(row) : undefined;
+    return row ? this.toNode(row) : undefined;
   }
 
-  private toResource(row: ResourceRow): StoredResource {
+  private nodeById(nodeId: string) {
+    return this.ctx.storage.sql
+      .exec<{ id: string; path: string }>(
+        "SELECT id, path FROM fs_resources WHERE id = ?",
+        nodeId,
+      )
+      .toArray()[0];
+  }
+
+  private toNode(row: ResourceRow): StoredNode {
     const base = {
       path: row.path,
       id: row.id,
@@ -166,12 +345,14 @@ export class FileSystemState extends DurableObject {
       lastModified: row.last_modified,
     };
     if (row.kind === "directory") return { ...base, kind: "directory" };
+    if (row.object_key === null)
+      throw new Error("File metadata is missing its object key");
+    if (row.size === null) throw new Error("File metadata is missing its size");
     return {
       ...base,
       kind: "file",
-      size: row.size ?? 0,
-      ...(row.content_type ? { contentType: row.content_type } : {}),
-      ...(row.object_key ? { objectKey: row.object_key } : {}),
+      size: row.size,
+      objectKey: row.object_key,
     };
   }
 
@@ -179,8 +360,7 @@ export class FileSystemState extends DurableObject {
     const prefix = path === ROOT ? ROOT : `${path}/`;
     return this.ctx.storage.sql
       .exec<ResourceRow>(
-        `SELECT path, id, kind, created_at, last_modified, object_key,
-                size, content_type
+        `SELECT path, id, kind, created_at, last_modified, object_key, size
          FROM fs_resources
          WHERE path = ? OR substr(path, 1, ?) = ?
          ORDER BY length(path), path`,
@@ -189,25 +369,24 @@ export class FileSystemState extends DurableObject {
         prefix,
       )
       .toArray()
-      .map((row) => this.toResource(row));
+      .map((row) => this.toNode(row));
   }
 
-  private insertResource(resource: StoredResource) {
+  private insertNode(node: StoredNode) {
     this.ctx.storage.sql.exec(
       `INSERT INTO fs_resources
        (path, parent_path, name, id, kind, created_at, last_modified,
-        object_key, size, content_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      resource.path,
-      resource.path === ROOT ? null : dirname(resource.path),
-      resource.path === ROOT ? "" : basename(resource.path),
-      resource.id,
-      resource.kind,
-      resource.createdAt,
-      resource.lastModified,
-      resource.kind === "file" ? (resource.objectKey ?? null) : null,
-      resource.kind === "file" ? resource.size : null,
-      resource.kind === "file" ? (resource.contentType ?? null) : null,
+        object_key, size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      node.path,
+      node.path === ROOT ? null : dirname(node.path),
+      node.path === ROOT ? "" : basename(node.path),
+      node.id,
+      node.kind,
+      node.createdAt,
+      node.lastModified,
+      node.kind === "file" ? node.objectKey : null,
+      node.kind === "file" ? node.size : null,
     );
   }
 
@@ -219,66 +398,68 @@ export class FileSystemState extends DurableObject {
     );
   }
 
-  private removeMetadata(resources: readonly StoredResource[]) {
-    for (const resource of resources) {
+  private removeMetadata(nodes: readonly StoredNode[]) {
+    for (const node of nodes) {
       this.ctx.storage.sql.exec(
         "DELETE FROM fs_resources WHERE path = ?",
-        resource.path,
+        node.path,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_xattrs WHERE node_id = ?",
+        node.id,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_record_locks WHERE node_id = ?",
+        node.id,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_flocks WHERE node_id = ?",
+        node.id,
       );
     }
+  }
+
+  private removeNamespaceLocks(path: string, recursive: boolean) {
+    this.ctx.storage.sql.exec(
+      recursive
+        ? "DELETE FROM fs_namespace_locks WHERE root = ? OR substr(root, 1, ?) = ?"
+        : "DELETE FROM fs_namespace_locks WHERE root = ?",
+      ...(recursive ? [path, path.length + 1, `${path}/`] : [path]),
+    );
+  }
+
+  private copyXattrs(sourceNodeId: string, destinationNodeId: string) {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO fs_xattrs (node_id, name, value)
+       SELECT ?, name, value FROM fs_xattrs WHERE node_id = ?`,
+      destinationNodeId,
+      sourceNodeId,
+    );
   }
 
   private retainObjectRef(objectKey: string) {
-    const existing = this.ctx.storage.sql
-      .exec<ObjectRefRow>(
-        "SELECT object_key, ref_count FROM fs_object_refs WHERE object_key = ?",
-        objectKey,
-      )
-      .toArray()[0];
-    if (existing) {
-      this.ctx.storage.sql.exec(
-        "UPDATE fs_object_refs SET ref_count = ref_count + 1 WHERE object_key = ?",
-        objectKey,
-      );
-    } else {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO fs_object_refs (object_key, ref_count) VALUES (?, 1)",
-        objectKey,
-      );
-    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO fs_object_refs (object_key, ref_count) VALUES (?, 1)
+       ON CONFLICT(object_key) DO UPDATE SET ref_count = ref_count + 1`,
+      objectKey,
+    );
   }
 
-  private releaseObjectRefs(resources: readonly StoredResource[]): string[] {
-    const releases = new Map<string, number>();
-    for (const resource of resources) {
-      if (resource.kind !== "file" || !resource.objectKey) continue;
-      releases.set(
-        resource.objectKey,
-        (releases.get(resource.objectKey) ?? 0) + 1,
-      );
+  private releaseObjectRefs(nodes: readonly StoredNode[]) {
+    const counts = new Map<string, number>();
+    for (const node of nodes) {
+      if (node.kind !== "file") continue;
+      counts.set(node.objectKey, (counts.get(node.objectKey) ?? 0) + 1);
     }
-
     const released: string[] = [];
-    for (const [objectKey, releaseCount] of releases) {
+    for (const [objectKey, count] of counts) {
       const reference = this.ctx.storage.sql
-        .exec<ObjectRefRow>(
-          "SELECT object_key, ref_count FROM fs_object_refs WHERE object_key = ?",
+        .exec<{ ref_count: number }>(
+          "SELECT ref_count FROM fs_object_refs WHERE object_key = ?",
           objectKey,
         )
         .toArray()[0];
-      if (!reference) {
-        console.error("Missing object reference", objectKey);
-        continue;
-      }
-      if (releaseCount > reference.ref_count) {
-        console.error(
-          "Object reference count underflow",
-          objectKey,
-          releaseCount,
-          reference.ref_count,
-        );
-      }
-      if (releaseCount >= reference.ref_count) {
+      if (!reference || count >= reference.ref_count) {
         this.ctx.storage.sql.exec(
           "DELETE FROM fs_object_refs WHERE object_key = ?",
           objectKey,
@@ -287,7 +468,7 @@ export class FileSystemState extends DurableObject {
       } else {
         this.ctx.storage.sql.exec(
           "UPDATE fs_object_refs SET ref_count = ref_count - ? WHERE object_key = ?",
-          releaseCount,
+          count,
           objectKey,
         );
       }
@@ -295,29 +476,48 @@ export class FileSystemState extends DurableObject {
     return released;
   }
 
-  private recordChanges(
-    changes: readonly { path: string; kind: "changed" | "removed" }[],
-  ) {
+  private metadata() {
+    return this.ctx.storage.sql
+      .exec<MetadataRow>(
+        "SELECT revision, journal_id FROM fs_metadata WHERE id = 1",
+      )
+      .one();
+  }
+
+  private cursor(revision: number) {
+    return `${this.metadata().journal_id}:${revision}`;
+  }
+
+  private recordChanges(changes: readonly StoredNodeChange[]) {
     if (!changes.length) return;
     const revision = this.ctx.storage.sql
-      .exec<RevisionRow>(
+      .exec<{ revision: number }>(
         "UPDATE fs_metadata SET revision = revision + 1 WHERE id = 1 RETURNING revision",
       )
       .one().revision;
-    for (const change of changes) {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO fs_changes (revision, path, kind) VALUES (?, ?, ?)",
-        revision,
-        change.path,
-        change.kind,
-      );
-    }
+    this.ctx.storage.sql.exec(
+      "INSERT INTO fs_change_sets (revision, changes_json) VALUES (?, ?)",
+      revision,
+      JSON.stringify(changes),
+    );
   }
 
-  private revision() {
-    return this.ctx.storage.sql
-      .exec<RevisionRow>("SELECT revision FROM fs_metadata WHERE id = 1")
-      .one().revision;
+  private parseCursor(cursor: string): StateResult<number> {
+    const separator = cursor.lastIndexOf(":");
+    if (separator <= 0) return { ok: false, error: "invalid-sync-token" };
+    const revisionText = cursor.slice(separator + 1);
+    if (!/^\d+$/.test(revisionText))
+      return { ok: false, error: "invalid-sync-token" };
+    const revision = Number(revisionText);
+    const metadata = this.metadata();
+    if (
+      cursor.slice(0, separator) !== metadata.journal_id ||
+      !Number.isSafeInteger(revision) ||
+      revision < 0 ||
+      revision > metadata.revision
+    )
+      return { ok: false, error: "invalid-sync-token" };
+    return { ok: true, value: revision };
   }
 
   private planCopy(
@@ -329,19 +529,19 @@ export class FileSystemState extends DurableObject {
     const source = this.resource(sourcePath);
     if (!source) return { ok: false, error: "not-found" };
     const destinationIsDescendant = relative(sourcePath, destinationPath);
+    const sourceIsDescendant = relative(destinationPath, sourcePath);
     if (
       sourcePath === destinationPath ||
       (source.kind === "directory" &&
         destinationIsDescendant !== "" &&
-        !destinationIsDescendant.startsWith(".."))
+        !destinationIsDescendant.startsWith("..")) ||
+      (sourceIsDescendant !== "" && !sourceIsDescendant.startsWith(".."))
     )
       return { ok: false, error: "invalid-destination" };
-
-    const parentResource = this.resource(dirname(destinationPath));
-    if (!parentResource) return { ok: false, error: "parent-not-found" };
-    if (parentResource.kind !== "directory")
+    const parent = this.resource(dirname(destinationPath));
+    if (!parent) return { ok: false, error: "parent-not-found" };
+    if (parent.kind !== "directory")
       return { ok: false, error: "not-directory" };
-
     const destination = this.resource(destinationPath);
     if (destination && !overwrite)
       return { ok: false, error: "already-exists" };
@@ -357,30 +557,26 @@ export class FileSystemState extends DurableObject {
     };
   }
 
-  readResource(path: string): StateResult<StoredResource | undefined> {
-    return this.transaction(() => {
-      const resource = this.resource(path);
-      return { ok: true, value: resource };
-    });
+  readNode(path: string): StateResult<StoredNode | undefined> {
+    return this.transaction(() => ({ ok: true, value: this.resource(path) }));
   }
 
-  readDirectory(path: string): StateResult<StoredResource[]> {
+  readDirectory(path: string): StateResult<StoredNode[]> {
     return this.transaction(() => {
-      const directory = this.resource(path);
-      if (!directory) return { ok: false, error: "not-found" };
-      if (directory.kind !== "directory")
+      const node = this.resource(path);
+      if (!node) return { ok: false, error: "not-found" };
+      if (node.kind !== "directory")
         return { ok: false, error: "not-directory" };
       return {
         ok: true,
         value: this.ctx.storage.sql
           .exec<ResourceRow>(
-            `SELECT path, id, kind, created_at, last_modified, object_key,
-                    size, content_type
+            `SELECT path, id, kind, created_at, last_modified, object_key, size
              FROM fs_resources WHERE parent_path = ? ORDER BY name`,
             path,
           )
           .toArray()
-          .map((row) => this.toResource(row)),
+          .map((row) => this.toNode(row)),
       };
     });
   }
@@ -388,136 +584,105 @@ export class FileSystemState extends DurableObject {
   writeFile(
     path: string,
     file: FileWrite,
-  ): StateResult<{
-    resource: StoredFile;
-    releasedObjectKeys: string[];
-  }> {
+  ): StateResult<{ node: StoredFile; releasedObjectKeys: string[] }> {
     return this.transaction(() => {
-      const parentResource = this.resource(dirname(path));
-      if (!parentResource) return { ok: false, error: "parent-not-found" };
-      if (parentResource.kind !== "directory")
+      const parent = this.resource(dirname(path));
+      if (!parent) return { ok: false, error: "parent-not-found" };
+      if (parent.kind !== "directory")
         return { ok: false, error: "not-directory" };
-
       const existing = this.resource(path);
       if (existing?.kind === "directory")
         return { ok: false, error: "already-exists" };
       const now = Date.now();
-      const resource: StoredFile = {
+      const node: StoredFile = {
         path,
-        id: file.id,
+        id: existing?.id ?? file.id,
         kind: "file",
         createdAt: existing?.createdAt ?? now,
         lastModified: now,
         size: file.size,
-        ...(file.contentType ? { contentType: file.contentType } : {}),
         objectKey: file.objectKey,
       };
       const releasedObjectKeys =
         existing?.kind === "file" && existing.objectKey !== file.objectKey
           ? this.releaseObjectRefs([existing])
           : [];
-      const retainNewObject =
-        existing?.kind !== "file" || existing.objectKey !== file.objectKey;
       if (existing) {
         this.ctx.storage.sql.exec(
           `UPDATE fs_resources
-           SET id = ?, last_modified = ?, object_key = ?, size = ?,
-               content_type = ?
+           SET id = ?, last_modified = ?, object_key = ?, size = ?
            WHERE path = ?`,
-          resource.id,
-          resource.lastModified,
-          resource.objectKey,
-          resource.size,
-          resource.contentType ?? null,
+          node.id,
+          node.lastModified,
+          node.objectKey,
+          node.size,
           path,
         );
-      } else {
-        this.insertResource(resource);
-      }
-      if (retainNewObject) this.retainObjectRef(file.objectKey);
-      this.touch(parentResource.path, now);
-      this.recordChanges([{ path, kind: "changed" }]);
-      return {
-        ok: true,
-        value: {
-          resource,
-          releasedObjectKeys,
-        },
-      };
+      } else this.insertNode(node);
+      if (existing?.kind !== "file" || existing.objectKey !== file.objectKey)
+        this.retainObjectRef(file.objectKey);
+      this.touch(parent.path, now);
+      this.recordChanges([
+        { kind: existing ? "modified" : "created", nodeId: node.id, path },
+      ]);
+      return { ok: true, value: { node, releasedObjectKeys } };
     });
   }
 
-  createDirectory(
-    path: string,
-    directory: DirectoryCreate = {},
-  ): StateResult<StoredDirectory> {
+  createDirectory(path: string): StateResult<StoredDirectory> {
     return this.transaction(() => {
-      const created = this.insertDirectory(path, directory);
-      if (created.ok) this.recordChanges([{ path, kind: "changed" }]);
-      return created;
+      if (path === ROOT) return { ok: false, error: "already-exists" };
+      const parent = this.resource(dirname(path));
+      if (!parent) return { ok: false, error: "parent-not-found" };
+      if (parent.kind !== "directory")
+        return { ok: false, error: "not-directory" };
+      if (this.resource(path)) return { ok: false, error: "already-exists" };
+      const now = Date.now();
+      const node: StoredDirectory = {
+        path,
+        id: crypto.randomUUID(),
+        kind: "directory",
+        createdAt: now,
+        lastModified: now,
+      };
+      this.insertNode(node);
+      this.touch(parent.path, now);
+      this.recordChanges([{ kind: "created", nodeId: node.id, path }]);
+      return { ok: true, value: node };
     });
   }
 
-  private insertDirectory(
-    path: string,
-    directory: DirectoryCreate,
-  ): StateResult<StoredDirectory> {
-    if (path === ROOT) return { ok: false, error: "already-exists" };
-    const parentResource = this.resource(dirname(path));
-    if (!parentResource) return { ok: false, error: "parent-not-found" };
-    if (parentResource.kind !== "directory")
-      return { ok: false, error: "not-directory" };
-    if (this.resource(path)) return { ok: false, error: "already-exists" };
-
-    const now = Date.now();
-    const resource: StoredDirectory = {
-      path,
-      id: directory.id ?? crypto.randomUUID(),
-      kind: "directory",
-      createdAt: now,
-      lastModified: now,
-    };
-    this.insertResource(resource);
-    this.touch(parentResource.path, now);
-    return { ok: true, value: resource };
-  }
-
-  removeResource(
+  removeNode(
     path: string,
     recursive: boolean,
-  ): StateResult<{
-    resources: StoredResource[];
-    releasedObjectKeys: string[];
-  }> {
+  ): StateResult<{ nodes: StoredNode[]; releasedObjectKeys: string[] }> {
     return this.transaction(() => {
-      const resource = this.resource(path);
-      if (!resource) return { ok: false, error: "not-found" };
-      const resources = this.subtree(path);
-      if (resource.kind === "directory" && !recursive && resources.length > 1)
+      const node = this.resource(path);
+      if (!node) return { ok: false, error: "not-found" };
+      const nodes = this.subtree(path);
+      if (node.kind === "directory" && !recursive && nodes.length > 1)
         return { ok: false, error: "directory-not-empty" };
-
-      const releasedObjectKeys = this.releaseObjectRefs(resources);
-      this.removeMetadata(resources);
+      const releasedObjectKeys = this.releaseObjectRefs(nodes);
+      this.removeNamespaceLocks(path, true);
+      this.removeMetadata(nodes);
       this.touch(dirname(path), Date.now());
       this.recordChanges(
-        resources.map((resource) => ({
-          path: resource.path,
-          kind: "removed" as const,
+        nodes.map((removed) => ({
+          kind: "deleted" as const,
+          nodeId: removed.id,
+          path: removed.path,
         })),
       );
-      return { ok: true, value: { resources, releasedObjectKeys } };
+      return { ok: true, value: { nodes, releasedObjectKeys } };
     });
   }
 
-  copyResource(
+  copyNode(
     sourcePath: string,
     destinationPath: string,
     recursive: boolean,
     overwrite: boolean,
-  ): StateResult<{
-    resource: StoredResource;
-    releasedObjectKeys: string[];
-  }> {
+  ): StateResult<{ node: StoredNode; releasedObjectKeys: string[] }> {
     return this.transaction(() => {
       const plan = this.planCopy(
         sourcePath,
@@ -526,13 +691,14 @@ export class FileSystemState extends DurableObject {
         overwrite,
       );
       if (!plan.ok) return plan;
-
       const releasedObjectKeys = this.releaseObjectRefs(plan.value.replaced);
+      this.removeNamespaceLocks(destinationPath, true);
       this.removeMetadata(plan.value.replaced);
       const now = Date.now();
+      const created: StoredNode[] = [];
       for (const source of plan.value.source) {
         const relativePath = relative(sourcePath, source.path);
-        const resource: StoredResource = {
+        const node: StoredNode = {
           ...source,
           path:
             relativePath === ""
@@ -542,83 +708,82 @@ export class FileSystemState extends DurableObject {
           createdAt: now,
           lastModified: now,
         };
-        this.insertResource(resource);
-        if (resource.kind === "file" && resource.objectKey)
-          this.retainObjectRef(resource.objectKey);
+        this.insertNode(node);
+        this.copyXattrs(source.id, node.id);
+        if (node.kind === "file") this.retainObjectRef(node.objectKey);
+        created.push(node);
       }
       this.touch(dirname(destinationPath), now);
       this.recordChanges([
-        ...plan.value.replaced.map((resource) => ({
-          path: resource.path,
-          kind: "removed" as const,
+        ...plan.value.replaced.map((removed) => ({
+          kind: "deleted" as const,
+          nodeId: removed.id,
+          path: removed.path,
         })),
-        ...plan.value.source.map((resource) => {
-          const relativePath = relative(sourcePath, resource.path);
-          return {
-            path:
-              relativePath === ""
-                ? destinationPath
-                : join(destinationPath, relativePath),
-            kind: "changed" as const,
-          };
-        }),
+        ...created.map((node) => ({
+          kind: "created" as const,
+          nodeId: node.id,
+          path: node.path,
+        })),
       ]);
-      const resource = this.resource(destinationPath);
-      return resource
-        ? { ok: true, value: { resource, releasedObjectKeys } }
+      const node = this.resource(destinationPath);
+      return node
+        ? { ok: true, value: { node, releasedObjectKeys } }
         : { ok: false, error: "not-found" };
     });
   }
 
-  moveResource(
+  moveNode(
     sourcePath: string,
     destinationPath: string,
     overwrite: boolean,
-  ): StateResult<{
-    resource: StoredResource;
-    releasedObjectKeys: string[];
-  }> {
+  ): StateResult<{ node: StoredNode; releasedObjectKeys: string[] }> {
     return this.transaction(() => {
       const plan = this.planCopy(sourcePath, destinationPath, true, overwrite);
       if (!plan.ok) return plan;
-
       const releasedObjectKeys = this.releaseObjectRefs(plan.value.replaced);
+      this.removeNamespaceLocks(destinationPath, true);
       this.removeMetadata(plan.value.replaced);
-      const moved = plan.value.source.map((resource) => {
-        const relativePath = relative(sourcePath, resource.path);
+      const moved = plan.value.source.map((source) => {
+        const relativePath = relative(sourcePath, source.path);
         return {
-          previousPath: resource.path,
+          node: source,
+          previousPath: source.path,
           nextPath:
             relativePath === ""
               ? destinationPath
               : join(destinationPath, relativePath),
         };
       });
-      for (const { previousPath, nextPath } of moved) {
+      for (const { previousPath, nextPath } of moved)
         this.ctx.storage.sql.exec(
-          "UPDATE fs_resources SET path = ?, parent_path = ?, name = ? WHERE path = ?",
+          `UPDATE fs_resources
+           SET path = ?, parent_path = ?, name = ?
+           WHERE path = ?`,
           nextPath,
           dirname(nextPath),
           basename(nextPath),
           previousPath,
         );
-      }
       const now = Date.now();
       this.touch(dirname(sourcePath), now);
       this.touch(dirname(destinationPath), now);
       this.recordChanges([
-        ...plan.value.replaced.map((resource) => ({
-          path: resource.path,
-          kind: "removed" as const,
+        ...plan.value.replaced.map((removed) => ({
+          kind: "deleted" as const,
+          nodeId: removed.id,
+          path: removed.path,
         })),
-        ...moved.flatMap(({ previousPath, nextPath }) => [
-          { path: previousPath, kind: "removed" as const },
-          { path: nextPath, kind: "changed" as const },
-        ]),
+        ...moved.map(({ node, previousPath, nextPath }) => ({
+          kind: "moved" as const,
+          nodeId: node.id,
+          previousPath,
+          path: nextPath,
+        })),
       ]);
-      const resource = this.resource(destinationPath);
-      return resource
-        ? { ok: true, value: { resource, releasedObjectKeys } }
+      const node = this.resource(destinationPath);
+      return node
+        ? { ok: true, value: { node, releasedObjectKeys } }
         : { ok: false, error: "not-found" };
     });
   }
@@ -639,61 +804,591 @@ export class FileSystemState extends DurableObject {
     });
   }
 
-  currentRevision(collectionPath: string): StateResult<number> {
-    return this.transaction(() => {
-      const collection = this.resource(collectionPath);
-      if (!collection) return { ok: false, error: "not-found" };
-      if (collection.kind !== "directory")
-        return { ok: false, error: "not-directory" };
-      return { ok: true, value: this.revision() };
-    });
+  getCurrentCursor(): StateResult<string> {
+    return this.transaction(() => ({
+      ok: true,
+      value: this.cursor(this.metadata().revision),
+    }));
   }
 
-  changesSince(
-    collectionPath: string,
-    revision: number,
-    level: "1" | "infinite",
-  ): StateResult<StoredChangeResult> {
+  readChanges(after: string, limit?: number): StateResult<StoredChangePage> {
     return this.transaction(() => {
-      const collection = this.resource(collectionPath);
-      if (!collection) return { ok: false, error: "not-found" };
-      if (collection.kind !== "directory")
-        return { ok: false, error: "not-directory" };
-      if (revision > this.revision())
-        return { ok: false, error: "invalid-sync-token" };
-      const changes = new Map<string, ChangeRow>();
-      for (const change of this.ctx.storage.sql
-        .exec<ChangeRow>(
-          "SELECT path, kind, revision FROM fs_changes WHERE revision > ? ORDER BY revision",
-          revision,
+      const parsed = this.parseCursor(after);
+      if (!parsed.ok) return parsed;
+      const pageSize = Math.max(1, Math.min(limit ?? 100, 1000));
+      const rows = this.ctx.storage.sql
+        .exec<ChangeSetRow>(
+          `SELECT revision, changes_json
+           FROM fs_change_sets WHERE revision > ?
+           ORDER BY revision LIMIT ?`,
+          parsed.value,
+          pageSize,
         )
-        .toArray()) {
-        const inScope =
-          level === "1"
-            ? dirname(change.path) === collectionPath
-            : (() => {
-                const relativePath = relative(collectionPath, change.path);
-                return relativePath !== "" && !relativePath.startsWith("..");
-              })();
-        if (inScope) changes.set(change.path, change);
-      }
+        .toArray();
+      const lastRevision = rows.at(-1)?.revision ?? parsed.value;
+      const hasMore =
+        this.ctx.storage.sql
+          .exec<{ revision: number }>(
+            "SELECT revision FROM fs_change_sets WHERE revision > ? LIMIT 1",
+            lastRevision,
+          )
+          .toArray().length > 0;
       return {
         ok: true,
         value: {
-          revision: this.revision(),
-          changes: [...changes.values()]
-            .sort((left, right) => left.path.localeCompare(right.path))
-            .map((change) => {
-              const resource =
-                change.kind === "changed"
-                  ? this.resource(change.path)
-                  : undefined;
-              return resource
-                ? { kind: "changed" as const, path: change.path, resource }
-                : { kind: "removed" as const, path: change.path };
-            }),
+          sets: rows.map((row) => ({
+            cursor: this.cursor(row.revision),
+            changes: JSON.parse(row.changes_json) as StoredNodeChange[],
+          })),
+          nextCursor: this.cursor(lastRevision),
+          hasMore,
         },
       };
+    });
+  }
+
+  getXattr(nodeId: string, name: string): StateResult<Uint8Array | undefined> {
+    return this.transaction(() => {
+      if (!this.nodeById(nodeId)) return { ok: false, error: "not-found" };
+      const row = this.ctx.storage.sql
+        .exec<XAttrRow>(
+          "SELECT value FROM fs_xattrs WHERE node_id = ? AND name = ?",
+          nodeId,
+          name,
+        )
+        .toArray()[0];
+      return {
+        ok: true,
+        value: row ? new Uint8Array(row.value) : undefined,
+      };
+    });
+  }
+
+  listXattrs(nodeId: string): StateResult<readonly string[]> {
+    return this.transaction(() => {
+      if (!this.nodeById(nodeId)) return { ok: false, error: "not-found" };
+      return {
+        ok: true,
+        value: this.ctx.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM fs_xattrs WHERE node_id = ? ORDER BY name",
+            nodeId,
+          )
+          .toArray()
+          .map((row) => row.name),
+      };
+    });
+  }
+
+  setXattr(
+    nodeId: string,
+    name: string,
+    value: Uint8Array,
+    mode: "upsert" | "create" | "replace" = "upsert",
+  ): StateResult<void> {
+    return this.transaction(() => {
+      const node = this.nodeById(nodeId);
+      if (!node) return { ok: false, error: "not-found" };
+      const existing = this.ctx.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM fs_xattrs WHERE node_id = ? AND name = ?",
+          nodeId,
+          name,
+        )
+        .toArray()[0];
+      if (mode === "create" && existing)
+        return { ok: false, error: "already-exists" };
+      if (mode === "replace" && !existing)
+        return { ok: false, error: "not-found" };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fs_xattrs (node_id, name, value)
+         VALUES (?, ?, ?)
+         ON CONFLICT(node_id, name) DO UPDATE SET value = excluded.value`,
+        nodeId,
+        name,
+        new Uint8Array(value).buffer,
+      );
+      this.recordChanges([{ kind: "modified", nodeId, path: node.path }]);
+      return { ok: true, value: undefined };
+    });
+  }
+
+  removeXattr(nodeId: string, name: string): StateResult<void> {
+    return this.transaction(() => {
+      const node = this.nodeById(nodeId);
+      if (!node) return { ok: false, error: "not-found" };
+      const existing = this.ctx.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM fs_xattrs WHERE node_id = ? AND name = ?",
+          nodeId,
+          name,
+        )
+        .toArray()[0];
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_xattrs WHERE node_id = ? AND name = ?",
+        nodeId,
+        name,
+      );
+      if (existing)
+        this.recordChanges([{ kind: "modified", nodeId, path: node.path }]);
+      return { ok: true, value: undefined };
+    });
+  }
+
+  patchXattrs(
+    nodeId: string,
+    changes: readonly (
+      | { kind: "set"; name: string; value: Uint8Array }
+      | { kind: "remove"; name: string }
+    )[],
+  ): StateResult<void> {
+    return this.transaction(() => {
+      const node = this.nodeById(nodeId);
+      if (!node) return { ok: false, error: "not-found" };
+      for (const change of changes) {
+        if (change.kind === "set") {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO fs_xattrs (node_id, name, value)
+             VALUES (?, ?, ?)
+             ON CONFLICT(node_id, name) DO UPDATE SET value = excluded.value`,
+            nodeId,
+            change.name,
+            new Uint8Array(change.value).buffer,
+          );
+        } else {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM fs_xattrs WHERE node_id = ? AND name = ?",
+            nodeId,
+            change.name,
+          );
+        }
+      }
+      if (changes.length)
+        this.recordChanges([{ kind: "modified", nodeId, path: node.path }]);
+      return { ok: true, value: undefined };
+    });
+  }
+
+  private purgeExpiredNamespaceLocks(now: number) {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM fs_namespace_locks WHERE expires_at IS NOT NULL AND expires_at <= ?",
+      now,
+    );
+  }
+
+  private namespaceLockApplies(lock: NamespaceLockRow, path: string) {
+    const descendant = relative(lock.root, path);
+    return (
+      lock.root === path ||
+      (lock.depth === "infinity" &&
+        descendant !== "" &&
+        !descendant.startsWith(".."))
+    );
+  }
+
+  private isDescendant(ancestor: string, path: string) {
+    const descendant = relative(ancestor, path);
+    return descendant !== "" && !descendant.startsWith("..");
+  }
+
+  private storedNamespaceLock(
+    row: NamespaceLockRow,
+    now: number,
+  ): StoredNamespaceLock {
+    return {
+      token: row.token,
+      root: row.root,
+      scope: row.scope,
+      depth: row.depth,
+      ...(row.expires_at === null
+        ? {}
+        : { timeout: Math.max(0, Math.ceil((row.expires_at - now) / 1000)) }),
+      ...(row.owner === null ? {} : { owner: row.owner }),
+    };
+  }
+
+  getNamespaceLocks(path: string): StateResult<readonly StoredNamespaceLock[]> {
+    return this.transaction(() => {
+      const now = Date.now();
+      this.purgeExpiredNamespaceLocks(now);
+      return {
+        ok: true,
+        value: this.ctx.storage.sql
+          .exec<NamespaceLockRow>(
+            "SELECT token, root, scope, depth, expires_at, owner FROM fs_namespace_locks",
+          )
+          .toArray()
+          .filter((lock) => this.namespaceLockApplies(lock, path))
+          .map((lock) => this.storedNamespaceLock(lock, now)),
+      };
+    });
+  }
+
+  createNamespaceLock(
+    path: string,
+    request: StoredNamespaceLockRequest,
+  ): StateResult<StoredNamespaceLock> {
+    return this.transaction(() => {
+      const now = Date.now();
+      this.purgeExpiredNamespaceLocks(now);
+      const conflict = this.ctx.storage.sql
+        .exec<NamespaceLockRow>(
+          "SELECT token, root, scope, depth, expires_at, owner FROM fs_namespace_locks",
+        )
+        .toArray()
+        .some(
+          (lock) =>
+            (this.namespaceLockApplies(lock, path) ||
+              (request.depth === "infinity" &&
+                this.isDescendant(path, lock.root))) &&
+            (lock.scope === "exclusive" || request.scope === "exclusive"),
+        );
+      if (conflict) return { ok: false, error: "locked" };
+      const row: NamespaceLockRow = {
+        token: `opaquelocktoken:${crypto.randomUUID()}`,
+        root: path,
+        scope: request.scope,
+        depth: request.depth,
+        expires_at:
+          request.timeout === undefined ? null : now + request.timeout * 1000,
+        owner: request.owner ?? null,
+      };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fs_namespace_locks
+         (token, root, scope, depth, expires_at, owner)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        row.token,
+        row.root,
+        row.scope,
+        row.depth,
+        row.expires_at,
+        row.owner,
+      );
+      return { ok: true, value: this.storedNamespaceLock(row, now) };
+    });
+  }
+
+  refreshNamespaceLock(
+    path: string,
+    token: string,
+    timeout?: number,
+  ): StateResult<StoredNamespaceLock> {
+    return this.transaction(() => {
+      const now = Date.now();
+      this.purgeExpiredNamespaceLocks(now);
+      const row = this.ctx.storage.sql
+        .exec<NamespaceLockRow>(
+          "SELECT token, root, scope, depth, expires_at, owner FROM fs_namespace_locks WHERE token = ?",
+          token,
+        )
+        .toArray()[0];
+      if (!row || !this.namespaceLockApplies(row, path))
+        return { ok: false, error: "locked" };
+      const expiresAt = timeout === undefined ? null : now + timeout * 1000;
+      this.ctx.storage.sql.exec(
+        "UPDATE fs_namespace_locks SET expires_at = ? WHERE token = ?",
+        expiresAt,
+        token,
+      );
+      return {
+        ok: true,
+        value: this.storedNamespaceLock({ ...row, expires_at: expiresAt }, now),
+      };
+    });
+  }
+
+  unlockNamespaceLock(path: string, token: string): StateResult<void> {
+    return this.transaction(() => {
+      this.purgeExpiredNamespaceLocks(Date.now());
+      const row = this.ctx.storage.sql
+        .exec<NamespaceLockRow>(
+          "SELECT token, root, scope, depth, expires_at, owner FROM fs_namespace_locks WHERE token = ?",
+          token,
+        )
+        .toArray()[0];
+      if (!row || !this.namespaceLockApplies(row, path))
+        return { ok: false, error: "precondition-failed" };
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_namespace_locks WHERE token = ?",
+        token,
+      );
+      return { ok: true, value: undefined };
+    });
+  }
+
+  private purgeExpiredLocks(now: number) {
+    const expired = this.ctx.storage.sql
+      .exec<SessionRow>(
+        "SELECT session_id, expires_at FROM fs_sessions WHERE expires_at <= ?",
+        now,
+      )
+      .toArray();
+    for (const session of expired) {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_record_locks WHERE session_id = ?",
+        session.session_id,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_flocks WHERE session_id = ?",
+        session.session_id,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_sessions WHERE session_id = ?",
+        session.session_id,
+      );
+    }
+  }
+
+  private renewSessionInTransaction(sessionId: string, now: number) {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO fs_sessions (session_id, expires_at) VALUES (?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET expires_at = excluded.expires_at`,
+      sessionId,
+      now + LOCK_LEASE_MS,
+    );
+  }
+
+  private ownRecordLocks(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+  ) {
+    return this.ctx.storage.sql
+      .exec<RecordLockRow>(
+        `SELECT id, node_id, session_id, owner_id, type, start, length
+         FROM fs_record_locks
+         WHERE node_id = ? AND session_id = ? AND owner_id = ?`,
+        nodeId,
+        owner.sessionId,
+        owner.ownerId,
+      )
+      .toArray();
+  }
+
+  private removeRecordRange(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    removal: StoredLockRange,
+  ) {
+    for (const lock of this.ownRecordLocks(nodeId, owner)) {
+      const original = { start: lock.start, length: lock.length };
+      if (!rangesOverlap(original, removal)) continue;
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_record_locks WHERE id = ?",
+        lock.id,
+      );
+      for (const remainder of subtractRange(original, removal))
+        this.ctx.storage.sql.exec(
+          `INSERT INTO fs_record_locks
+           (node_id, session_id, owner_id, type, start, length)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          nodeId,
+          owner.sessionId,
+          owner.ownerId,
+          lock.type,
+          remainder.start,
+          remainder.length,
+        );
+    }
+  }
+
+  private findRecordConflict(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    type: "read" | "write",
+    range: StoredLockRange,
+  ) {
+    return this.ctx.storage.sql
+      .exec<RecordLockRow>(
+        `SELECT id, node_id, session_id, owner_id, type, start, length
+         FROM fs_record_locks WHERE node_id = ?`,
+        nodeId,
+      )
+      .toArray()
+      .find(
+        (lock) =>
+          (lock.session_id !== owner.sessionId ||
+            lock.owner_id !== owner.ownerId) &&
+          rangesOverlap(range, { start: lock.start, length: lock.length }) &&
+          (type === "write" || lock.type === "write"),
+      );
+  }
+
+  private trySetLock(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    request: {
+      type: "read" | "write" | "unlock";
+      range: StoredLockRange;
+    },
+  ): StateResult<void> {
+    return this.transaction(() => {
+      const range = normalizeRange(request.range);
+      if (!range) return { ok: false, error: "precondition-failed" };
+      if (!this.nodeById(nodeId)) return { ok: false, error: "not-found" };
+      const now = Date.now();
+      this.purgeExpiredLocks(now);
+      if (request.type === "unlock") {
+        this.removeRecordRange(nodeId, owner, range);
+        return { ok: true, value: undefined };
+      }
+      const conflict = this.findRecordConflict(
+        nodeId,
+        owner,
+        request.type,
+        range,
+      );
+      if (conflict) return { ok: false, error: "locked" };
+      this.removeRecordRange(nodeId, owner, range);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fs_record_locks
+         (node_id, session_id, owner_id, type, start, length)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        nodeId,
+        owner.sessionId,
+        owner.ownerId,
+        request.type,
+        range.start,
+        range.length,
+      );
+      this.renewSessionInTransaction(owner.sessionId, now);
+      return { ok: true, value: undefined };
+    });
+  }
+
+  getLock(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    request: { type: "read" | "write"; range: StoredLockRange },
+  ): StateResult<StoredLockConflict | undefined> {
+    return this.transaction(() => {
+      const range = normalizeRange(request.range);
+      if (!range) return { ok: false, error: "precondition-failed" };
+      if (!this.nodeById(nodeId)) return { ok: false, error: "not-found" };
+      this.purgeExpiredLocks(Date.now());
+      const conflict = this.findRecordConflict(
+        nodeId,
+        owner,
+        request.type,
+        range,
+      );
+      return {
+        ok: true,
+        value: conflict
+          ? {
+              owner: {
+                sessionId: conflict.session_id,
+                ownerId: conflict.owner_id,
+              },
+              type: conflict.type,
+              range: { start: conflict.start, length: conflict.length },
+            }
+          : undefined,
+      };
+    });
+  }
+
+  async setLock(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    request: {
+      type: "read" | "write" | "unlock";
+      range: StoredLockRange;
+    },
+    options?: { wait?: boolean },
+  ): Promise<StateResult<void>> {
+    const wait = options?.wait ?? false;
+    while (true) {
+      const result = this.trySetLock(nodeId, owner, request);
+      if (result.ok || result.error !== "locked" || !wait) return result;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  private tryFlock(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    type: "shared" | "exclusive" | "unlock",
+  ): StateResult<void> {
+    return this.transaction(() => {
+      if (!this.nodeById(nodeId)) return { ok: false, error: "not-found" };
+      const now = Date.now();
+      this.purgeExpiredLocks(now);
+      if (type === "unlock") {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM fs_flocks WHERE node_id = ? AND session_id = ? AND owner_id = ?",
+          nodeId,
+          owner.sessionId,
+          owner.ownerId,
+        );
+        return { ok: true, value: undefined };
+      }
+      const conflict = this.ctx.storage.sql
+        .exec<FlockRow>(
+          `SELECT node_id, session_id, owner_id, type
+           FROM fs_flocks WHERE node_id = ?`,
+          nodeId,
+        )
+        .toArray()
+        .some(
+          (lock) =>
+            (lock.session_id !== owner.sessionId ||
+              lock.owner_id !== owner.ownerId) &&
+            (type === "exclusive" || lock.type === "exclusive"),
+        );
+      if (conflict) return { ok: false, error: "locked" };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO fs_flocks (node_id, session_id, owner_id, type)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(node_id, session_id, owner_id) DO UPDATE SET type = excluded.type`,
+        nodeId,
+        owner.sessionId,
+        owner.ownerId,
+        type,
+      );
+      this.renewSessionInTransaction(owner.sessionId, now);
+      return { ok: true, value: undefined };
+    });
+  }
+
+  async flock(
+    nodeId: string,
+    owner: { sessionId: string; ownerId: string },
+    type: "shared" | "exclusive" | "unlock",
+    options?: { wait?: boolean },
+  ): Promise<StateResult<void>> {
+    const wait = options?.wait ?? false;
+    while (true) {
+      const result = this.tryFlock(nodeId, owner, type);
+      if (result.ok || result.error !== "locked" || !wait) return result;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  releaseOwner(owner: {
+    sessionId: string;
+    ownerId: string;
+  }): StateResult<void> {
+    return this.transaction(() => {
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_record_locks WHERE session_id = ? AND owner_id = ?",
+        owner.sessionId,
+        owner.ownerId,
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM fs_flocks WHERE session_id = ? AND owner_id = ?",
+        owner.sessionId,
+        owner.ownerId,
+      );
+      return { ok: true, value: undefined };
+    });
+  }
+
+  renewSession(sessionId: string): StateResult<void> {
+    return this.transaction(() => {
+      const now = Date.now();
+      this.purgeExpiredLocks(now);
+      this.renewSessionInTransaction(sessionId, now);
+      return { ok: true, value: undefined };
     });
   }
 }

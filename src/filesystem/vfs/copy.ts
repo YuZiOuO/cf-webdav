@@ -1,19 +1,19 @@
 import { FileSystemError } from "../errors";
-import type { CopyOptions, Path } from "../../interfaces";
+import type { Path } from "../../interfaces";
 import { unwrapState } from "../meta";
-import { deleteReleasedObjects, toResource } from "./helper";
+import { deleteReleasedObjects, toNode } from "./helper";
 import type { FileSystemDependencies } from "./helper";
 
 export const copy = async (
   deps: FileSystemDependencies,
   source: Path,
   destination: Path,
-  options: CopyOptions,
+  options: { recursive: boolean; overwrite: boolean },
 ) => {
   if (source === "/" || destination === "/")
     throw new FileSystemError("invalid-path", "Invalid source or destination");
   const copied = unwrapState(
-    await deps.state.copyResource(
+    await deps.state.copyNode(
       source,
       destination,
       options.recursive,
@@ -21,5 +21,5 @@ export const copy = async (
     ),
   );
   await deleteReleasedObjects(deps.objects, copied.releasedObjectKeys);
-  return toResource(copied.resource);
+  return toNode(copied.node);
 };

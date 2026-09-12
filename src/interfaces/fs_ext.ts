@@ -27,6 +27,48 @@ export interface XAttrProvider {
     options?: { mode?: "upsert" | "create" | "replace" },
   ): Promise<void>;
   removeXattr(nodeId: NodeId, name: string): Promise<void>;
+  /** Atomically apply multiple attribute additions, replacements, and removals. */
+  patchXattrs(nodeId: NodeId, changes: readonly XAttrChange[]): Promise<void>;
+}
+
+export type XAttrChange =
+  | { kind: "set"; name: string; value: Uint8Array }
+  | { kind: "remove"; name: string };
+
+export type NamespaceLockScope = "exclusive" | "shared";
+export type NamespaceLockDepth = "0" | "infinity";
+
+/** A lease over a path and, optionally, its descendants. */
+export interface NamespaceLock {
+  token: string;
+  root: Path;
+  scope: NamespaceLockScope;
+  depth: NamespaceLockDepth;
+  timeout?: number;
+  /** Opaque owner metadata retained by the filesystem. */
+  owner?: string;
+}
+
+export interface NamespaceLockRequest {
+  scope: NamespaceLockScope;
+  depth: NamespaceLockDepth;
+  timeout?: number;
+  owner?: string;
+}
+
+/** Optional locking capability for hierarchical filesystem namespaces. */
+export interface NamespaceLockProvider {
+  getNamespaceLocks(path: Path): Promise<readonly NamespaceLock[]>;
+  createNamespaceLock(
+    path: Path,
+    request: NamespaceLockRequest,
+  ): Promise<NamespaceLock>;
+  refreshNamespaceLock(
+    path: Path,
+    token: string,
+    timeout?: number,
+  ): Promise<NamespaceLock>;
+  unlockNamespaceLock(path: Path, token: string): Promise<void>;
 }
 
 declare const changeCursorType: unique symbol;

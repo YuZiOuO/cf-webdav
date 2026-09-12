@@ -3,32 +3,31 @@ import { FileSystemError } from "../errors";
 import type {
   ByteRange,
   DirectoryEntry,
-  File,
+  FileNode,
   FileContent,
   ObjectKey,
   Path,
-  ReadFileOptions,
 } from "../../interfaces";
-import { emptyBody, toResource } from "./helper";
+import { toNode } from "./helper";
 import { unwrapState } from "../meta";
 import type { FileSystemDependencies } from "./helper";
 
 export const stat = async (deps: FileSystemDependencies, path: Path) => {
-  const stored = unwrapState(await deps.state.readResource(path));
-  return stored ? toResource(stored) : undefined;
+  const stored = unwrapState(await deps.state.readNode(path));
+  return stored ? toNode(stored) : undefined;
 };
 
 export const readFile = async (
   deps: FileSystemDependencies,
   path: Path,
-  options?: ReadFileOptions,
+  options?: { range?: ByteRange },
 ): Promise<FileContent> => {
-  const stored = unwrapState(await deps.state.readResource(path));
+  const stored = unwrapState(await deps.state.readNode(path));
   if (!stored) throw new FileSystemError("not-found", "Resource not found");
   if (stored.kind !== "file")
     throw new FileSystemError("not-file", "Resource is a directory");
 
-  const file = toResource(stored) as File;
+  const file = toNode(stored) as FileNode;
 
   let range: ByteRange | undefined;
   if (options?.range) {
@@ -44,8 +43,6 @@ export const readFile = async (
       );
     range = { start: options.range.start, end };
   }
-
-  if (!stored.objectKey) return { file, body: emptyBody() };
 
   const object = await deps.objects.get(stored.objectKey as ObjectKey, {
     ...(range ? { range } : {}),
@@ -63,6 +60,6 @@ export const readdir = async function* (
   path: Path,
 ): AsyncIterable<DirectoryEntry> {
   for (const stored of unwrapState(await deps.state.readDirectory(path))) {
-    yield { name: basename(stored.path), resource: toResource(stored) };
+    yield { name: basename(stored.path), node: toNode(stored) };
   }
 };
